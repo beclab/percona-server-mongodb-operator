@@ -66,15 +66,19 @@ func (r *ReconcilePerconaServerMongoDBRestore) reconcilePhysicalRestore(ctx cont
 		if err := r.client.Delete(ctx, &pbmConf); err != nil && !k8serrors.IsNotFound(err) {
 			return status, errors.Wrapf(err, "delete secret pbm-config")
 		}
+		log.Info("[PBMCONFIG] Delete pbm-config", "-", "-", "status", cr.Status.State)
 
 		status.State = psmdbv1.RestoreStateWaiting
 	}
 
 	if err := r.createPBMConfigSecret(ctx, cr, cluster, bcp); err != nil {
+		log.Info("[PBMCONFIG] Create pbm-config", "-", "-", "status", cr.Status.State, "error", err)
 		return status, errors.Wrap(err, "create PBM config secret")
 	}
+	log.Info("[PBMCONFIG] Find pbm-config", "-", "-", "status", cr.Status.State)
 
 	if err := r.prepareStatefulSetsForPhysicalRestore(ctx, cluster); err != nil {
+		log.Info("[PREPARED STS] prepare sts", "-", "-", "status", cr.Status.State, "error", err)
 		return status, errors.Wrap(err, "prepare statefulsets for physical restore")
 	}
 
@@ -150,7 +154,9 @@ func (r *ReconcilePerconaServerMongoDBRestore) reconcilePhysicalRestore(ctx cont
 		}
 
 		command = []string{"/opt/percona/pbm", "restore", bcp.Status.PBMname, "--out", "json"}
-		log.Info("Starting restore", "command", command)
+
+		// + restore start
+		log.Info("[RESTORE] Starting restore - start", "-", "-", "command", command, "backup-pbmname", cr.Spec.BackupSource.PBMname, "backup-pbmname", bcp.Status.PBMname)
 
 		stdoutBuf.Reset()
 		stderrBuf.Reset()
@@ -166,6 +172,9 @@ func (r *ReconcilePerconaServerMongoDBRestore) reconcilePhysicalRestore(ctx cont
 		if err := json.Unmarshal(stdoutBuf.Bytes(), &out); err != nil {
 			return status, errors.Wrap(err, "unmarshal PBM restore output")
 		}
+
+		// + restore end
+		log.Info("[RESTORE] Starting restore - end", "-", "-", "backup-pbmname", cr.Spec.BackupSource.PBMname, "stdout", stdoutBuf.String())
 
 		status.State = psmdbv1.RestoreStateRequested
 		status.PBMname = out.Name
@@ -185,7 +194,12 @@ func (r *ReconcilePerconaServerMongoDBRestore) reconcilePhysicalRestore(ctx cont
 			"--out", "json",
 		}
 
-		log.V(1).Info("Check restore status", "command", command)
+		// + checking start
+		log.Info("[RESTORE] Checking restore - start", "-", "-", "command", command,
+			"backup-pbmname", cr.Spec.BackupSource.PBMname,
+			"restore-pbmname", cr.Status.PBMname,
+			"restore-state", cr.Status.State)
+
 		if err := r.clientcmd.Exec(&pod, "mongod", command, nil, stdoutBuf, stderrBuf, false); err != nil {
 			return errors.Wrap(err, "describe restore")
 		}
@@ -196,12 +210,17 @@ func (r *ReconcilePerconaServerMongoDBRestore) reconcilePhysicalRestore(ctx cont
 		return status, err
 	}
 
-	
 	if err := json.Unmarshal(stdoutBuf.Bytes(), &meta); err != nil {
 		return status, errors.Wrap(err, "unmarshal PBM describe-restore output")
 	}
 
-	log.V(1).Info("PBM restore status", "status", meta)
+	// + checking end
+	log.Info("[RESTORE] Checking restore - end", "-", "-",
+		"backup-pbmname", cr.Spec.BackupSource.PBMname,
+		"restore-pbmname", cr.Status.PBMname,
+		"restore-state", status.State,
+		"stdout", stdoutBuf.String(),
+	)
 
 	switch meta.Status {
 	case pbm.StatusStarting:
