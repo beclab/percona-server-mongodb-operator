@@ -62,8 +62,6 @@ spec:
       expose:
         enabled: true
         exposeType: ClusterIP
-        loadBalancerSourceRanges:
-        - 10.0.0.0/8
       sidecars:
       - image: busybox
         command: ["/bin/sh"]
@@ -78,8 +76,6 @@ spec:
           localPingThresholdMs: 15
       expose:
         exposeType: ClusterIP
-        loadBalancerSourceRanges:
-        - 10.0.0.0/8
       sidecars:
       - image: busybox
         command: ["/bin/sh"]
@@ -179,8 +175,6 @@ spec:
     expose:
       enabled: true
       exposeType: ClusterIP
-      loadBalancerSourceRanges:
-      - 10.0.0.0/8
     resources:
       limits:
         cpu: 500m

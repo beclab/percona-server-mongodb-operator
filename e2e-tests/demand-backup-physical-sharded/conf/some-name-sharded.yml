@@ -62,7 +62,7 @@ spec:
           cpu: 100m
           memory: 0.1G
       expose:
-        exposeType: LoadBalancer
+        exposeType: ClusterIP
     configsvrReplSet:
       affinity:
         antiAffinityTopologyKey: none

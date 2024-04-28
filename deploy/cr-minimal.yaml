@@ -3,11 +3,9 @@ kind: PerconaServerMongoDB
 metadata:
   name: minimal-cluster
 spec:
-  crVersion: 1.16.0
-  image: perconalab/percona-server-mongodb-operator:main-mongod6.0
-  unsafeFlags:
-    replsetSize: true
-    mongosSize: true
+  crVersion: 1.14.0
+  image: percona/percona-server-mongodb:6.0.4-3
+  allowUnsafeConfigurations: true
   upgradeOptions:
     apply: disabled
     schedule: "0 2 * * *"

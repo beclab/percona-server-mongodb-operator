@@ -43,12 +43,13 @@ func Service(cr *api.PerconaServerMongoDB, replset *api.ReplsetSpec) *corev1.Ser
 			Ports: []corev1.ServicePort{
 				{
 					Name:       mongodPortName,
-					Port:       api.DefaultMongodPort,
-					TargetPort: intstr.FromInt(int(api.DefaultMongodPort)),
+					Port:       api.MongodPort(cr),
+					TargetPort: intstr.FromInt(int(api.MongodPort(cr))),
 				},
 			},
-			ClusterIP: "None",
-			Selector:  ls,
+			ClusterIP:                "None",
+			Selector:                 ls,
+			LoadBalancerSourceRanges: replset.Expose.LoadBalancerSourceRanges,
 		},
 	}
 
@@ -100,8 +101,8 @@ func ExternalService(cr *api.PerconaServerMongoDB, replset *api.ReplsetSpec, pod
 		Ports: []corev1.ServicePort{
 			{
 				Name:       mongodPortName,
-				Port:       api.DefaultMongodPort,
-				TargetPort: intstr.FromInt(int(api.DefaultMongodPort)),
+				Port:       api.MongodPort(cr),
+				TargetPort: intstr.FromInt(int(api.MongodPort(cr))),
 			},
 		},
 		Selector: map[string]string{"statefulset.kubernetes.io/pod-name": podName},
@@ -145,7 +146,7 @@ func GetServiceAddr(ctx context.Context, svc corev1.Service, pod corev1.Pod, cl 
 		}
 
 	case corev1.ServiceTypeLoadBalancer:
-		host, err := getIngressPoint(ctx, cl, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace})
+		host, err := getIngressPoint(ctx, pod, cl)
 		if err != nil {
 			return nil, errors.Wrap(err, "get ingress endpoint")
 		}
@@ -171,7 +172,7 @@ func GetServiceAddr(ctx context.Context, svc corev1.Service, pod corev1.Pod, cl 
 
 var ErrNoIngressPoints = errors.New("ingress points not found")
 
-func getIngressPoint(ctx context.Context, cl client.Client, serviceNN types.NamespacedName) (string, error) {
+func getIngressPoint(ctx context.Context, pod corev1.Pod, cl client.Client) (string, error) {
 	var retries uint64 = 0
 
 	var ip string
@@ -188,7 +189,7 @@ func getIngressPoint(ctx context.Context, cl client.Client, serviceNN types.Name
 		}
 
 		svc := &corev1.Service{}
-		err := cl.Get(ctx, serviceNN, svc)
+		err := cl.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, svc)
 		if err != nil {
 			return "", errors.Wrap(err, "failed to fetch service")
 		}
@@ -212,11 +213,11 @@ func getIngressPoint(ctx context.Context, cl client.Client, serviceNN types.Name
 }
 
 // GetReplsetAddrs returns a slice of replset host:port addresses
-func GetReplsetAddrs(ctx context.Context, cl client.Client, cr *api.PerconaServerMongoDB, dnsMode api.DNSMode, rsName string, rsExposed bool, pods []corev1.Pod) ([]string, error) {
+func GetReplsetAddrs(ctx context.Context, cl client.Client, cr *api.PerconaServerMongoDB, rsName string, rsExposed bool, pods []corev1.Pod) ([]string, error) {
 	addrs := make([]string, 0)
 
 	for _, pod := range pods {
-		host, err := MongoHost(ctx, cl, cr, dnsMode, rsName, rsExposed, pod)
+		host, err := MongoHost(ctx, cl, cr, rsName, rsExposed, pod)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to get external hostname for pod %s", pod.Name)
 		}
@@ -253,8 +254,8 @@ func GetMongosAddrs(ctx context.Context, cl client.Client, cr *api.PerconaServer
 }
 
 // MongoHost returns the mongo host for given pod
-func MongoHost(ctx context.Context, cl client.Client, cr *api.PerconaServerMongoDB, dnsMode api.DNSMode, rsName string, rsExposed bool, pod corev1.Pod) (string, error) {
-	switch dnsMode {
+func MongoHost(ctx context.Context, cl client.Client, cr *api.PerconaServerMongoDB, rsName string, rsExposed bool, pod corev1.Pod) (string, error) {
+	switch cr.Spec.ClusterServiceDNSMode {
 	case api.DNSModeServiceMesh:
 		return GetServiceMeshAddr(cr, pod.Name, cr.Namespace), nil
 	case api.DNSModeInternal:
@@ -302,14 +303,12 @@ func MongosHost(ctx context.Context, cl client.Client, cr *api.PerconaServerMong
 	if cr.Spec.Sharding.Mongos.Expose.ServicePerPod {
 		svcName = pod.Name
 	}
-
-	nn := types.NamespacedName{
-		Namespace: cr.Namespace,
-		Name:      svcName,
-	}
-
 	svc := new(corev1.Service)
-	err := cl.Get(ctx, nn, svc)
+	err := cl.Get(ctx,
+		types.NamespacedName{
+			Namespace: cr.Namespace,
+			Name:      svcName,
+		}, svc)
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
 			return "", nil
@@ -318,16 +317,18 @@ func MongosHost(ctx context.Context, cl client.Client, cr *api.PerconaServerMong
 		return "", errors.Wrap(err, "failed to get mongos service")
 	}
 
-	mongos := cr.Spec.Sharding.Mongos
-	if mongos.Expose.ExposeType == corev1.ServiceTypeLoadBalancer && svc.Spec.Type == corev1.ServiceTypeLoadBalancer {
-		host, err := getIngressPoint(ctx, cl, nn)
-		if err != nil {
-			return "", errors.Wrap(err, "get ingress endpoint")
+	var host string
+	if mongos := cr.Spec.Sharding.Mongos; mongos.Expose.ExposeType == corev1.ServiceTypeLoadBalancer {
+		for _, i := range svc.Status.LoadBalancer.Ingress {
+			host = i.IP
+			if len(i.Hostname) > 0 {
+				host = i.Hostname
+			}
 		}
-		return host, nil
+	} else {
+		host = svc.Name + "." + cr.Namespace + "." + cr.Spec.ClusterServiceDNSSuffix
 	}
-
-	return svc.Name + "." + cr.Namespace + "." + cr.Spec.ClusterServiceDNSSuffix, nil
+	return host, nil
 }
 
 func getExtAddr(ctx context.Context, cl client.Client, namespace string, pod corev1.Pod) (string, error) {
@@ -347,13 +348,13 @@ func getExtAddr(ctx context.Context, cl client.Client, namespace string, pod cor
 // GetAddr returns replicaSet pod address in cluster
 func GetAddr(cr *api.PerconaServerMongoDB, pod, replset string) string {
 	return strings.Join([]string{pod, cr.Name + "-" + replset, cr.Namespace, cr.Spec.ClusterServiceDNSSuffix}, ".") +
-		":" + strconv.Itoa(int(api.DefaultMongodPort))
+		":" + strconv.Itoa(int(api.MongodPort(cr)))
 }
 
 // GetAddr returns replicaSet pod address in a service mesh
 func GetServiceMeshAddr(cr *api.PerconaServerMongoDB, pod, replset string) string {
 	return strings.Join([]string{pod, cr.Namespace, cr.Spec.ClusterServiceDNSSuffix}, ".") +
-		":" + strconv.Itoa(int(api.DefaultMongodPort))
+		":" + strconv.Itoa(int(api.MongodPort(cr)))
 }
 
 // GetMCSAddr returns ReplicaSet pod address using MultiCluster FQDN

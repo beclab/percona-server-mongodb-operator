@@ -24,7 +24,7 @@ function check_telemetry_transfer() {
 		.spec.initImage = "'$IMAGE'" |
 		.spec.crVersion = "9.9.9" |
 		.spec.image = "'$IMAGE_MONGOD'" |
-		.spec.pmm.image = "'$IMAGE_PMM_CLIENT'" |
+		.spec.pmm.image = "'$IMAGE_PMM'" |
 		.spec.backup.enabled = false |
 		.spec.backup.image = "'$IMAGE_BACKUP'"' ${src_dir}/deploy/cr-minimal.yaml \
 		| kubectl_bin apply -f -
@@ -143,7 +143,7 @@ kubectl_bin delete pod -l run=version-service ${OPERATOR_NS:+-n $OPERATOR_NS}
 check_telemetry_transfer "http://version-service-cr:11000" "disabled" "disabled"
 
 cases=("version-service-exact" "version-service-recommended" "version-service-latest" "version-service-major" "version-service-unreachable")
-expected_images=("percona/percona-server-mongodb:6.0.3-2" "percona/percona-server-mongodb:7.0.5-3" "percona/percona-server-mongodb:7.0.7-4" "percona/percona-server-mongodb:5.0.14-12" "$IMAGE_MONGOD")
+expected_images=("percona/percona-server-mongodb:4.4.8-9" "percona/percona-server-mongodb:6.0.3-2" "percona/percona-server-mongodb:6.0.4-3" "percona/percona-server-mongodb:5.0.14-12" "$IMAGE_MONGOD")
 
 for i in "${!cases[@]}"; do
 	desc "test ${cases[$i]}"
@@ -162,7 +162,7 @@ for i in "${!cases[@]}"; do
 		.spec.backup.enabled = false |
 		del(.spec.backup.tasks) |
 		.spec.image = "'$IMAGE_MONGOD'" |
-		.spec.pmm.image = "'$IMAGE_PMM_CLIENT'" |
+		.spec.pmm.image = "'$IMAGE_PMM'" |
 		.spec.backup.image = "'$IMAGE_BACKUP'"' "$tmp_file" \
 		| kubectl_bin apply -f -
 

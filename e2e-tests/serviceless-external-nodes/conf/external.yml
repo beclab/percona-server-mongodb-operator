@@ -4,9 +4,7 @@ metadata:
   name: mydb
 spec:
   unmanaged: true
-  unsafeFlags:
-    replsetSize: true
-    mongosSize: true
+  allowUnsafeConfigurations: true
   clusterServiceDNSMode: "Internal"
   image: percona/percona-server-mongodb:6.0.4-3
   imagePullPolicy: Always

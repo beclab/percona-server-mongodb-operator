@@ -11,8 +11,8 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
-	certmgrscheme "github.com/cert-manager/cert-manager/pkg/client/clientset/versioned/scheme"
 	"github.com/go-logr/logr"
+	certmgrscheme "github.com/jetstack/cert-manager/pkg/client/clientset/versioned/scheme"
 	uzap "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -23,8 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	metricsServer "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/percona/percona-server-mongodb-operator/pkg/apis"
 	"github.com/percona/percona-server-mongodb-operator/pkg/controller"
@@ -90,25 +88,19 @@ func main() {
 	}
 
 	options := ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsServer.Options{
-			BindAddress: metricsAddr,
-		},
+		Scheme:                 scheme,
+		MetricsBindAddress:     metricsAddr,
+		Port:                   9443,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "08db0feb.percona.com",
-		WebhookServer: webhook.NewServer(webhook.Options{
-			Port: 9443,
-		}),
+		Namespace:              namespace,
 	}
 
 	// Add support for MultiNamespace set in WATCH_NAMESPACE
 	if len(namespace) > 0 {
-		namespaces := make(map[string]cache.Config)
-		for _, ns := range append(strings.Split(namespace, ","), operatorNamespace) {
-			namespaces[ns] = cache.Config{}
-		}
-		options.Cache.DefaultNamespaces = namespaces
+		options.Namespace = ""
+		options.NewCache = cache.MultiNamespacedCacheBuilder(append(strings.Split(namespace, ","), operatorNamespace))
 	}
 
 	mgr, err := ctrl.NewManager(config, options)

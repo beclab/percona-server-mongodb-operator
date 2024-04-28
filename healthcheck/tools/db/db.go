@@ -19,25 +19,26 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
 	mgo "go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
-	"github.com/percona/percona-server-mongodb-operator/pkg/psmdb/mongo"
 )
 
 var (
-	ErrMsgAuthFailedStr      = "server returned error on SASL authentication step: Authentication failed."
-	ErrNoReachableServersStr = "no reachable servers"
+	ErrMsgAuthFailedStr      string = "server returned error on SASL authentication step: Authentication failed."
+	ErrNoReachableServersStr string = "no reachable servers"
 )
 
-func Dial(ctx context.Context, conf *Config) (mongo.Client, error) {
+func Dial(conf *Config) (*mgo.Client, error) {
+	log.WithFields(log.Fields{
+		"hosts":      conf.Hosts,
+		"ssl":        conf.SSL.Enabled,
+		"ssl_secure": conf.SSL.Insecure,
+	}).Debug("Connecting to mongodb")
+
 	if err := conf.configureTLS(); err != nil {
 		return nil, errors.Wrap(err, "configure TLS")
 	}
-
-	log := logf.FromContext(ctx)
-	log.V(1).Info("Connecting to mongodb", "hosts", conf.Hosts, "ssl", conf.SSL.Enabled, "ssl_insecure", conf.SSL.Insecure)
 
 	opts := options.Client().
 		SetHosts(conf.Hosts).
@@ -48,16 +49,16 @@ func Dial(ctx context.Context, conf *Config) (mongo.Client, error) {
 		SetServerSelectionTimeout(10 * time.Second)
 
 	if conf.Username != "" && conf.Password != "" {
-		log.V(1).Info("Enabling authentication for session", "user", conf.Username)
+		log.WithFields(log.Fields{"user": conf.Username}).Debug("Enabling authentication for session")
 	}
 
-	client, err := mgo.Connect(ctx, opts)
+	client, err := mgo.Connect(context.TODO(), opts)
 	if err != nil {
 		return nil, errors.Wrap(err, "connect to mongo replica set")
 	}
 
-	if err := client.Ping(ctx, nil); err != nil {
-		if err := client.Disconnect(ctx); err != nil {
+	if err := client.Ping(context.TODO(), nil); err != nil {
+		if err := client.Disconnect(context.TODO()); err != nil {
 			return nil, errors.Wrap(err, "disconnect client")
 		}
 
@@ -68,15 +69,15 @@ func Dial(ctx context.Context, conf *Config) (mongo.Client, error) {
 			SetServerSelectionTimeout(10 * time.Second).
 			SetDirect(true)
 
-		client, err = mgo.Connect(ctx, opts)
+		client, err = mgo.Connect(context.TODO(), opts)
 		if err != nil {
 			return nil, errors.Wrap(err, "connect to mongo replica set with direct")
 		}
 
-		if err := client.Ping(ctx, nil); err != nil {
+		if err := client.Ping(context.TODO(), nil); err != nil {
 			return nil, errors.Wrap(err, "ping mongo")
 		}
 	}
 
-	return mongo.ToInterface(client), nil
+	return client, nil
 }

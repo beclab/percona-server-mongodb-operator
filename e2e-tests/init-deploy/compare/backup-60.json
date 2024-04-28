@@ -39,11 +39,9 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dropCollection",
           "find",
-          "insert",
-          "updateSearchIndex"
+          "insert"
         ]
       },
       {
@@ -61,7 +59,6 @@
           "createCollection",
           "createIndex",
           "createRole",
-          "createSearchIndexes",
           "createUser",
           "dbStats",
           "dropCollection",
@@ -76,7 +73,6 @@
           "revokeRole",
           "setAuthenticationRestriction",
           "startBackup",
-          "updateSearchIndex",
           "viewRole",
           "viewUser"
         ]
@@ -92,11 +88,9 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dropCollection",
           "find",
-          "insert",
-          "updateSearchIndex"
+          "insert"
         ]
       },
       {
@@ -119,13 +113,11 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dropCollection",
           "find",
           "insert",
           "remove",
-          "update",
-          "updateSearchIndex"
+          "update"
         ]
       },
       {
@@ -140,23 +132,19 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dbHash",
           "dbStats",
           "dropCollection",
           "dropIndex",
-          "dropSearchIndex",
           "find",
           "insert",
           "killCursors",
           "listCollections",
           "listIndexes",
-          "listSearchIndexes",
           "planCacheRead",
           "remove",
           "renameCollectionSameDB",
-          "update",
-          "updateSearchIndex"
+          "update"
         ]
       },
       {
@@ -170,11 +158,9 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dropCollection",
           "find",
-          "insert",
-          "updateSearchIndex"
+          "insert"
         ]
       },
       {
@@ -189,23 +175,19 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dbHash",
           "dbStats",
           "dropCollection",
           "dropIndex",
-          "dropSearchIndex",
           "find",
           "insert",
           "killCursors",
           "listCollections",
           "listIndexes",
-          "listSearchIndexes",
           "planCacheRead",
           "remove",
           "renameCollectionSameDB",
-          "update",
-          "updateSearchIndex"
+          "update"
         ]
       },
       {
@@ -215,7 +197,6 @@
         },
         "actions": [
           "createIndex",
-          "createSearchIndexes",
           "find"
         ]
       },
@@ -230,11 +211,9 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dropCollection",
           "find",
-          "insert",
-          "updateSearchIndex"
+          "insert"
         ]
       },
       {
@@ -268,7 +247,6 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dbHash",
           "dbStats",
           "dropCollection",
@@ -280,9 +258,7 @@
           "killCursors",
           "listCollections",
           "listIndexes",
-          "listSearchIndexes",
-          "planCacheRead",
-          "updateSearchIndex"
+          "planCacheRead"
         ]
       },
       {
@@ -310,7 +286,6 @@
           "killCursors",
           "listCollections",
           "listIndexes",
-          "listSearchIndexes",
           "planCacheRead"
         ]
       },
@@ -340,7 +315,6 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dbHash",
           "dbStats",
           "dropCollection",
@@ -352,9 +326,7 @@
           "killCursors",
           "listCollections",
           "listIndexes",
-          "listSearchIndexes",
-          "planCacheRead",
-          "updateSearchIndex"
+          "planCacheRead"
         ]
       },
       {
@@ -368,11 +340,9 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dropCollection",
           "find",
-          "insert",
-          "updateSearchIndex"
+          "insert"
         ]
       },
       {
@@ -386,11 +356,9 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dropCollection",
           "find",
-          "insert",
-          "updateSearchIndex"
+          "insert"
         ]
       },
       {
@@ -407,7 +375,6 @@
           "killCursors",
           "listCollections",
           "listIndexes",
-          "listSearchIndexes",
           "planCacheRead"
         ]
       },
@@ -422,11 +389,9 @@
           "convertToCapped",
           "createCollection",
           "createIndex",
-          "createSearchIndexes",
           "dropCollection",
           "find",
-          "insert",
-          "updateSearchIndex"
+          "insert"
         ]
       },
       {

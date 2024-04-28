@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/percona/percona-backup-mongodb/pbm"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	appsv1 "k8s.io/api/apps/v1"
@@ -12,9 +13,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/percona/percona-backup-mongodb/pbm/ctrl"
-	"github.com/percona/percona-backup-mongodb/pbm/defs"
-	pbmErrors "github.com/percona/percona-backup-mongodb/pbm/errors"
 	psmdbv1 "github.com/percona/percona-server-mongodb-operator/pkg/apis/psmdb/v1"
 	"github.com/percona/percona-server-mongodb-operator/pkg/psmdb/backup"
 	"github.com/percona/percona-server-mongodb-operator/version"
@@ -35,7 +33,7 @@ func (r *ReconcilePerconaServerMongoDBRestore) reconcileLogicalRestore(ctx conte
 		return status, errors.New("cluster is unmanaged")
 	}
 
-	svr, err := version.Server(r.clientcmd)
+	svr, err := version.Server()
 	if err != nil {
 		return status, errors.Wrapf(err, "fetch server version")
 	}
@@ -44,7 +42,7 @@ func (r *ReconcilePerconaServerMongoDBRestore) reconcileLogicalRestore(ctx conte
 		return status, errors.Wrapf(err, "set defaults for %s/%s", cluster.Namespace, cluster.Name)
 	}
 
-	cjobs, err := backup.HasActiveJobs(ctx, r.newPBMFunc, r.client, cluster, backup.NewRestoreJob(cr), backup.NotPITRLock)
+	cjobs, err := backup.HasActiveJobs(ctx, r.client, cluster, backup.NewRestoreJob(cr), backup.NotPITRLock)
 	if err != nil {
 		return status, errors.Wrap(err, "check for concurrent jobs")
 	}
@@ -97,7 +95,7 @@ func (r *ReconcilePerconaServerMongoDBRestore) reconcileLogicalRestore(ctx conte
 			return status, errors.Wrap(err, "set pbm config")
 		}
 
-		isBlockedByPITR, err := pbmc.HasLocks(ctx, backup.IsPITRLock)
+		isBlockedByPITR, err := pbmc.HasLocks(backup.IsPITRLock)
 		if err != nil {
 			return status, errors.Wrap(err, "checking pbm pitr locks")
 		}
@@ -108,50 +106,50 @@ func (r *ReconcilePerconaServerMongoDBRestore) reconcileLogicalRestore(ctx conte
 			return status, nil
 		}
 
-		log.Info("Starting restore", "backup", backupName)
+		log.Info("Starting restore")
 		status.PBMname, err = runRestore(ctx, backupName, pbmc, cr.Spec.PITR)
 		status.State = psmdbv1.RestoreStateRequested
 		return status, err
 	}
 
-	meta, err := pbmc.GetRestoreMeta(ctx, cr.Status.PBMname)
-	if err != nil && !errors.Is(err, pbmErrors.ErrNotFound) {
+	meta, err := pbmc.C.GetRestoreMeta(cr.Status.PBMname)
+	if err != nil && !errors.Is(err, pbm.ErrNotFound) {
 		return status, errors.Wrap(err, "get pbm metadata")
 	}
 
 	if meta == nil || meta.Name == "" {
-		log.Info("Waiting for restore metadata", "pbmName", cr.Status.PBMname, "restore", cr.Name, "backup", cr.Spec.BackupName)
+		log.Info("Waiting for restore metadata", "PBM name", cr.Status.PBMname, "restore", cr.Name, "backup", cr.Spec.BackupName)
 		return status, nil
 	}
 
 	switch meta.Status {
-	case defs.StatusError:
+	case pbm.StatusError:
 		status.State = psmdbv1.RestoreStateError
 		status.Error = meta.Error
-		if err = reEnablePITR(ctx, pbmc, cluster.Spec.Backup); err != nil {
+		if err = reEnablePITR(pbmc, cluster.Spec.Backup); err != nil {
 			return status, err
 		}
-	case defs.StatusDone:
+	case pbm.StatusDone:
 		status.State = psmdbv1.RestoreStateReady
 		status.CompletedAt = &metav1.Time{
 			Time: time.Unix(meta.LastTransitionTS, 0),
 		}
-		if err = reEnablePITR(ctx, pbmc, cluster.Spec.Backup); err != nil {
+		if err = reEnablePITR(pbmc, cluster.Spec.Backup); err != nil {
 			return status, err
 		}
-	case defs.StatusStarting, defs.StatusRunning:
+	case pbm.StatusStarting, pbm.StatusRunning:
 		status.State = psmdbv1.RestoreStateRunning
 	}
 
 	return status, nil
 }
 
-func reEnablePITR(ctx context.Context, pbm backup.PBM, backup psmdbv1.BackupSpec) (err error) {
+func reEnablePITR(pbm *backup.PBM, backup psmdbv1.BackupSpec) (err error) {
 	if !backup.IsEnabledPITR() {
 		return
 	}
 
-	err = pbm.SetConfigVar(ctx, "pitr.enabled", "true")
+	err = pbm.C.SetConfigVar("pitr.enabled", "true")
 	if err != nil {
 		return
 	}
@@ -159,26 +157,23 @@ func reEnablePITR(ctx context.Context, pbm backup.PBM, backup psmdbv1.BackupSpec
 	return
 }
 
-func runRestore(ctx context.Context, backup string, pbmc backup.PBM, pitr *psmdbv1.PITRestoreSpec) (string, error) {
-	log := logf.FromContext(ctx)
-	log.Info("Starting logical restore", "backup", backup)
-
-	e := pbmc.Logger().NewEvent(string(ctrl.CmdResync), "", "", primitive.Timestamp{})
-	err := pbmc.ResyncStorage(ctx, e)
+func runRestore(ctx context.Context, backup string, pbmc *backup.PBM, pitr *psmdbv1.PITRestoreSpec) (string, error) {
+	e := pbmc.C.Logger().NewEvent(string(pbm.CmdResync), "", "", primitive.Timestamp{})
+	err := pbmc.C.ResyncStorage(e)
 	if err != nil {
 		return "", errors.Wrap(err, "set resync backup list from the store")
 	}
 
 	var (
-		cmd   ctrl.Cmd
+		cmd   pbm.Cmd
 		rName = time.Now().UTC().Format(time.RFC3339Nano)
 	)
 
 	switch {
 	case pitr == nil:
-		cmd = ctrl.Cmd{
-			Cmd: ctrl.CmdRestore,
-			Restore: &ctrl.RestoreCmd{
+		cmd = pbm.Cmd{
+			Cmd: pbm.CmdRestore,
+			Restore: &pbm.RestoreCmd{
 				Name:       rName,
 				BackupName: backup,
 			},
@@ -190,32 +185,29 @@ func runRestore(ctx context.Context, backup string, pbmc backup.PBM, pitr *psmdb
 			return "", err
 		}
 
-		cmd = ctrl.Cmd{
-			Cmd: ctrl.CmdRestore,
-			Restore: &ctrl.RestoreCmd{
-				Name:       rName,
-				BackupName: backup,
-				OplogTS:    primitive.Timestamp{T: uint32(ts)},
+		cmd = pbm.Cmd{
+			Cmd: pbm.CmdPITRestore,
+			PITRestore: &pbm.PITRestoreCmd{
+				Name: rName,
+				TS:   ts,
 			},
 		}
 	case pitr.Type == psmdbv1.PITRestoreTypeLatest:
-		tl, err := pbmc.GetLatestTimelinePITR(ctx)
+		tl, err := pbmc.GetLatestTimelinePITR()
 		if err != nil {
 			return "", err
 		}
 
-		cmd = ctrl.Cmd{
-			Cmd: ctrl.CmdRestore,
-			Restore: &ctrl.RestoreCmd{
-				Name:       rName,
-				BackupName: backup,
-				OplogTS:    primitive.Timestamp{T: tl.End},
+		cmd = pbm.Cmd{
+			Cmd: pbm.CmdPITRestore,
+			PITRestore: &pbm.PITRestoreCmd{
+				Name: rName,
+				TS:   int64(tl.End),
 			},
 		}
 	}
 
-	log.Info("Sending restore command", "restoreCmd", cmd.Restore)
-	if err = pbmc.SendCmd(ctx, cmd); err != nil {
+	if err = pbmc.C.SendCmd(cmd); err != nil {
 		return "", errors.Wrap(err, "send restore cmd")
 	}
 

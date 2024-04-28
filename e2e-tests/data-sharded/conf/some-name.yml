@@ -6,15 +6,16 @@ spec:
   #platform: openshift
   image:
   imagePullPolicy: Always
-    
-  tls:
-    mode: requireTLS
 
   sharding:
     enabled: true
 
     configsvrReplSet:
       size: 3
+      configuration: |
+        net:
+          tls:
+            mode: requireTLS
       affinity:
         antiAffinityTopologyKey: none
       volumeSpec:
@@ -25,6 +26,10 @@ spec:
 
     mongos:
       size: 3
+      configuration: |
+        net:
+          tls:
+            mode: requireTLS
       affinity:
         antiAffinityTopologyKey: none
       expose:
@@ -49,6 +54,9 @@ spec:
             storage: 1Gi
     size: 3
     configuration: |
+      net:
+        tls:
+          mode: requireTLS
       operationProfiling:
         mode: slowOp
         slowOpThresholdMs: 100
@@ -86,8 +94,11 @@ spec:
           requests:
             storage: 1Gi
 
-    size: 4
+    size: 3
     configuration: |
+      net:
+        tls:
+          mode: requireTLS
       operationProfiling:
         mode: slowOp
         slowOpThresholdMs: 100
@@ -108,9 +119,6 @@ spec:
             journalCompressor: snappy
           indexConfig:
             prefixCompression: true
-    arbiter:
-      enabled: true
-      size: 1
   - name: rs2
     affinity:
       antiAffinityTopologyKey: none
@@ -128,6 +136,9 @@ spec:
             storage: 1Gi
     size: 3
     configuration: |
+      net:
+        tls:
+          mode: requireTLS
       operationProfiling:
         mode: slowOp
         slowOpThresholdMs: 100
@@ -148,28 +159,6 @@ spec:
             journalCompressor: snappy
           indexConfig:
             prefixCompression: true
-    nonvoting:
-      enabled: true
-      size: 3
-      affinity:
-        antiAffinityTopologyKey: "kubernetes.io/hostname"
-      resources:
-        limits:
-          cpu: 500m
-          memory: 1G
-        requests:
-          cpu: 100m
-          memory: 0.1G
-      volumeSpec:
-        persistentVolumeClaim:
-          resources:
-            requests:
-              storage: 2Gi
-    volumeSpec:
-      persistentVolumeClaim:
-        resources:
-          requests:
-            storage: 1Gi
 
   secrets:
     users: some-users

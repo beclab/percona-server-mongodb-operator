@@ -3,7 +3,6 @@ package psmdb
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -87,7 +86,7 @@ func PMMContainer(cr *api.PerconaServerMongoDB, secret *corev1.Secret, customAdm
 		},
 		{
 			Name:  "DB_PORT",
-			Value: strconv.Itoa(int(api.DefaultMongodPort)),
+			Value: "27017",
 		},
 		{
 			Name:  "DB_PORT_MIN",
@@ -170,7 +169,7 @@ func PMMContainer(cr *api.PerconaServerMongoDB, secret *corev1.Secret, customAdm
 		pmm.Env = append(pmm.Env, pmmAgentEnvs(spec, secret, customLogin, customAdminParams)...)
 	}
 
-	if cr.CompareVersion("1.13.0") >= 0 {
+	if cr.CompareVersion("1.13.0") >= 0 && !cr.Spec.UnsafeConf {
 		pmm.VolumeMounts = []corev1.VolumeMount{
 			{
 				Name:      "ssl",
@@ -293,13 +292,11 @@ func pmmAgentEnvs(spec api.PMMSpec, secret *corev1.Secret, customLogin bool, cus
 }
 
 func PMMAgentScript(cr *api.PerconaServerMongoDB) []corev1.EnvVar {
-	// handle disabled TLS
-
 	pmmServerArgs := "$(PMM_ADMIN_CUSTOM_PARAMS) --skip-connection-check --metrics-mode=push "
 	pmmServerArgs += " --username=$(DB_USER) --password=$(DB_PASSWORD) --cluster=$(CLUSTER_NAME) "
 	pmmServerArgs += "--service-name=$(PMM_AGENT_SETUP_NODE_NAME) --host=$(DB_HOST) --port=$(DB_PORT)"
 
-	if cr.TLSEnabled() {
+	if cr.CompareVersion("1.13.0") >= 0 && !cr.Spec.UnsafeConf {
 		tlsParams := []string{
 			"--tls",
 			"--tls-skip-verify",
@@ -316,7 +313,7 @@ func PMMAgentScript(cr *api.PerconaServerMongoDB) []corev1.EnvVar {
 	pmmAnnotate := "pmm-admin annotate --service-name=$(PMM_AGENT_SETUP_NODE_NAME) 'Service restarted'"
 	prerunScript := pmmWait + "\n" + pmmAddService + "\n" + pmmAnnotate
 
-	if cr.TLSEnabled() {
+	if cr.CompareVersion("1.13.0") >= 0 && !cr.Spec.UnsafeConf {
 		prepareTLS := fmt.Sprintf("cat %[1]s/tls.key %[1]s/tls.crt > /tmp/tls.pem;", SSLDir)
 		prerunScript = prepareTLS + "\n" + prerunScript
 	}
@@ -376,31 +373,6 @@ func AddPMMContainer(ctx context.Context, cr *api.PerconaServerMongoDB, secret *
 			},
 		}
 		pmmC.Env = append(pmmC.Env, sidecarEnvs...)
-	}
-	if cr.CompareVersion("1.15.0") >= 0 {
-		// PMM team moved temp directory to /usr/local/percona/pmm2/tmp
-		// but it doesn't work on OpenShift so we set it back to /tmp
-		sidecarEnvs := []corev1.EnvVar{
-			{
-				Name:  "PMM_AGENT_PATHS_TEMPDIR",
-				Value: "/tmp",
-			},
-		}
-		pmmC.Env = append(pmmC.Env, sidecarEnvs...)
-	}
-
-	if cr.CompareVersion("1.16.0") >= 0 {
-		pmmC.Lifecycle = &corev1.Lifecycle{
-			PreStop: &corev1.LifecycleHandler{
-				Exec: &corev1.ExecAction{
-					Command: []string{
-						"bash",
-						"-c",
-						"pmm-admin unregister --force",
-					},
-				},
-			},
-		}
 	}
 
 	return &pmmC

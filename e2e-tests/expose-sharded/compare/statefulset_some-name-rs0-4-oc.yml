@@ -50,14 +50,12 @@ spec:
             - --relaxPermChecks
             - --sslAllowInvalidCertificates
             - --clusterAuthMode=x509
-            - --tlsMode=preferTLS
             - --shardsvr
             - --enableEncryption
             - --encryptionKeyFile=/etc/mongodb-encryption/encryption-key
             - --wiredTigerCacheSizeGB=0.25
             - --wiredTigerIndexPrefixCompression=true
             - --config=/etc/mongodb-config/mongod.conf
-            - --quiet
           command:
             - /opt/percona/ps-entry.sh
           env:
@@ -97,17 +95,12 @@ spec:
               name: mongodb
               protocol: TCP
           readinessProbe:
-            exec:
-              command:
-                - /opt/percona/mongodb-healthcheck
-                - k8s
-                - readiness
-                - --component
-                - mongod
             failureThreshold: 8
             initialDelaySeconds: 10
             periodSeconds: 3
             successThreshold: 1
+            tcpSocket:
+              port: 27017
             timeoutSeconds: 2
           resources:
             limits:
@@ -178,7 +171,7 @@ spec:
       securityContext: {}
       serviceAccount: default
       serviceAccountName: default
-      terminationGracePeriodSeconds: 60
+      terminationGracePeriodSeconds: 30
       volumes:
         - name: some-name-mongodb-keyfile
           secret:

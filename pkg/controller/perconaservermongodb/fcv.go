@@ -5,6 +5,7 @@ import (
 
 	v "github.com/hashicorp/go-version"
 	"github.com/pkg/errors"
+	mgo "go.mongodb.org/mongo-driver/mongo"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	api "github.com/percona/percona-server-mongodb-operator/pkg/apis/psmdb/v1"
@@ -12,7 +13,7 @@ import (
 )
 
 func (r *ReconcilePerconaServerMongoDB) getFCV(ctx context.Context, cr *api.PerconaServerMongoDB) (string, error) {
-	c, err := r.mongoClientWithRole(ctx, cr, *cr.Spec.Replsets[0], api.RoleClusterAdmin)
+	c, err := r.mongoClientWithRole(ctx, cr, *cr.Spec.Replsets[0], roleClusterAdmin)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to get connection")
 	}
@@ -23,7 +24,7 @@ func (r *ReconcilePerconaServerMongoDB) getFCV(ctx context.Context, cr *api.Perc
 		}
 	}()
 
-	return c.GetFCV(ctx)
+	return mongo.GetFCV(ctx, c)
 }
 
 func (r *ReconcilePerconaServerMongoDB) setFCV(ctx context.Context, cr *api.PerconaServerMongoDB, version string) error {
@@ -36,13 +37,13 @@ func (r *ReconcilePerconaServerMongoDB) setFCV(ctx context.Context, cr *api.Perc
 		return errors.Wrap(err, "failed to get go semver")
 	}
 
-	var cli mongo.Client
+	var cli *mgo.Client
 	var connErr error
 
 	if cr.Spec.Sharding.Enabled {
-		cli, connErr = r.mongosClientWithRole(ctx, cr, api.RoleClusterAdmin)
+		cli, connErr = r.mongosClientWithRole(ctx, cr, roleClusterAdmin)
 	} else {
-		cli, connErr = r.mongoClientWithRole(ctx, cr, *cr.Spec.Replsets[0], api.RoleClusterAdmin)
+		cli, connErr = r.mongoClientWithRole(ctx, cr, *cr.Spec.Replsets[0], roleClusterAdmin)
 	}
 
 	if connErr != nil {
@@ -55,5 +56,5 @@ func (r *ReconcilePerconaServerMongoDB) setFCV(ctx context.Context, cr *api.Perc
 		}
 	}()
 
-	return cli.SetFCV(ctx, MajorMinor(v))
+	return mongo.SetFCV(ctx, cli, MajorMinor(v))
 }

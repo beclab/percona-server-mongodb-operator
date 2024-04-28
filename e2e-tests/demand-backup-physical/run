@@ -10,32 +10,32 @@ run_backup() {
 	local storage=$1
 	local backup_name=$2
 
-	cat $test_dir/conf/backup.yml |
-		$sed -e "s/name:/name: ${backup_name}/" |
-		$sed -e "s/storageName:/storageName: ${storage}/" |
-		kubectl_bin apply -f -
+	cat $test_dir/conf/backup.yml \
+		| $sed -e "s/name:/name: ${backup_name}/" \
+		| $sed -e "s/storageName:/storageName: ${storage}/" \
+		| kubectl_bin apply -f -
 }
 
 run_restore() {
 	local backup_name=$1
 
-	cat $test_dir/conf/restore.yml |
-		$sed -e "s/name:/name: restore-${backup_name}/" |
-		$sed -e "s/backupName:/backupName: ${backup_name}/" |
-		kubectl_bin apply -f -
+	cat $test_dir/conf/restore.yml \
+		| $sed -e "s/name:/name: restore-${backup_name}/" \
+		| $sed -e "s/backupName:/backupName: ${backup_name}/" \
+		| kubectl_bin apply -f -
 }
 
 run_recovery_check() {
 	local backup_name=$1
 	local compare_suffix=${2:-"_restore"}
 
-	wait_restore "${backup_name}" "${cluster}" "requested" "0" "1200"
+	wait_restore "${backup_name}" "${cluster}" "requested" "0"
 	echo
 
 	compare_kubectl "statefulset/${cluster}-rs0" ${compare_suffix}
 
 	# we don't wait for cluster readiness here because the annotation gets removed then
-	wait_restore "${backup_name}" "${cluster}" "ready" "0" "1800"
+	wait_restore "${backup_name}" "${cluster}" "ready" "0"
 	kubectl_bin get psmdb ${cluster} -o yaml
 	if [ $(kubectl_bin get psmdb ${cluster} -o yaml | yq '.metadata.annotations."percona.com/resync-pbm"') == null ]; then
 		echo "psmdb/${cluster} should be annotated with percona.com/resync-pbm after a physical restore"
@@ -55,6 +55,7 @@ create_infra "${namespace}"
 deploy_minio
 apply_s3_storage_secrets
 
+### Case 1: Backup and restore on not sharded cluster
 desc 'Testing on not sharded cluster'
 
 echo "Creating PSMDB cluster"
@@ -124,24 +125,5 @@ echo 'check backup and restore -- minio'
 backup_dest_minio=$(get_backup_dest "${backup_name_minio}")
 run_restore ${backup_name_minio}
 run_recovery_check ${backup_name_minio}
-
-desc 'Testing with arbiter and non-voting nodes'
-
-apply_cluster "${test_dir}/conf/${cluster}-arbiter-nv.yml"
-echo "check if all pods started"
-wait_for_running ${cluster}-rs0 3
-wait_cluster_consistency ${cluster}
-
-echo 'running backups'
-backup_name_minio="backup-minio-arbiter-nv"
-run_backup minio ${backup_name_minio}
-wait_backup "${backup_name_minio}"
-
-echo "drop collection"
-run_mongo 'use myApp\n db.test.drop()' "myApp:myPass@${cluster}-rs0.${namespace}"
-echo 'check backup and restore -- minio'
-backup_dest_minio=$(get_backup_dest "${backup_name_minio}")
-run_restore ${backup_name_minio}
-run_recovery_check ${backup_name_minio} "_restore-arbiter-nv"
 
 destroy "$namespace"

@@ -10,32 +10,32 @@ run_backup() {
 	local storage=$1
 	local backup_name=$2
 
-	cat $test_dir/conf/backup.yml |
-		$sed -e "s/name:/name: ${backup_name}/" |
-		$sed -e "s/storageName:/storageName: ${storage}/" |
-		kubectl_bin apply -f -
+	cat $test_dir/conf/backup.yml \
+		| $sed -e "s/name:/name: ${backup_name}/" \
+		| $sed -e "s/storageName:/storageName: ${storage}/" \
+		| kubectl_bin apply -f -
 }
 
 run_restore() {
 	local backup_name=$1
 
-	cat $test_dir/conf/restore.yml |
-		$sed -e "s/name:/name: restore-${backup_name}/" |
-		$sed -e "s/backupName:/backupName: ${backup_name}/" |
-		kubectl_bin apply -f -
+	cat $test_dir/conf/restore.yml \
+		| $sed -e "s/name:/name: restore-${backup_name}/" \
+		| $sed -e "s/backupName:/backupName: ${backup_name}/" \
+		| kubectl_bin apply -f -
 }
 
 run_recovery_check() {
 	local backup_name=$1
 	local compare_suffix=${2:-"_restore"}
 
-	wait_restore "${backup_name}" "${cluster}" "requested" "0" "1200"
+	wait_restore "${backup_name}" "${cluster}" "requested" "0"
 	echo
 
 	compare_kubectl "statefulset/${cluster}-rs0" ${compare_suffix}
 
 	# we don't wait for cluster readiness here because the annotation gets removed then
-	wait_restore "${backup_name}" "${cluster}" "ready" "0" "1800"
+	wait_restore "${backup_name}" "${cluster}" "ready" "0"
 	kubectl_bin get psmdb ${cluster} -o yaml
 	if [ $(kubectl_bin get psmdb ${cluster} -o yaml | yq '.metadata.annotations."percona.com/resync-pbm"') == null ]; then
 		echo "psmdb/${cluster} should be annotated with percona.com/resync-pbm after a physical restore"
@@ -46,15 +46,6 @@ run_recovery_check() {
 	compare_mongos_cmd "find" "myApp:myPass@${cluster}-mongos.${namespace}" "-sharded"
 	echo
 	set -o xtrace
-}
-
-check_exported_mongos_service_endpoint() {
-	local host=$1
-
-	if [ "$host" != "$(kubectl_bin get psmdb $cluster -o=jsonpath='{.status.host}')" ]; then
-		echo "Exported host is not correct after the restore"
-		exit 1
-	fi
 }
 
 create_infra "${namespace}"
@@ -76,13 +67,6 @@ wait_for_running ${cluster}-rs0 3
 wait_for_running ${cluster}-cfg 3
 wait_for_running ${cluster}-mongos 3
 wait_cluster_consistency ${cluster}
-
-lbEndpoint=$(kubectl_bin get svc $cluster-mongos -o=jsonpath='{.status}' |
-	jq -r 'select(.loadBalancer != null and .loadBalancer.ingress != null and .loadBalancer.ingress != []) | .loadBalancer.ingress[0][]')
-if [ -z $lbEndpoint ]; then
-	echo "mongos service not exported correctly"
-	exit 1
-fi
 
 run_mongos \
 	'db.createUser({user:"myApp",pwd:"myPass",roles:[{db:"myApp",role:"readWrite"}]})' \
@@ -118,21 +102,18 @@ if [ -z "$SKIP_BACKUPS_TO_AWS_GCP_AZURE" ]; then
 	echo 'check backup and restore -- aws-s3'
 	run_restore ${backup_name_aws} "_restore_sharded"
 	run_recovery_check ${backup_name_aws} "_restore_sharded"
-	check_exported_mongos_service_endpoint "$lbEndpoint"
 
 	echo "drop collection"
 	run_mongos 'use myApp\n db.test.drop()' "myApp:myPass@${cluster}-mongos.${namespace}"
 	echo 'check backup and restore -- gcp-cs'
 	run_restore ${backup_name_gcp} "_restore_sharded"
 	run_recovery_check ${backup_name_gcp} "_restore_sharded"
-	check_exported_mongos_service_endpoint "$lbEndpoint"
 
 	echo "drop collection"
 	run_mongos 'use myApp\n db.test.drop()' "myApp:myPass@${cluster}-mongos.${namespace}"
 	echo 'check backup and restore -- azure-blob'
 	run_restore ${backup_name_azure} "_restore_sharded"
 	run_recovery_check ${backup_name_azure} "_restore_sharded"
-	check_exported_mongos_service_endpoint "$lbEndpoint"
 fi
 
 echo "drop collection"

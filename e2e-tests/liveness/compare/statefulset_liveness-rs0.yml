@@ -50,13 +50,11 @@ spec:
             - --relaxPermChecks
             - --sslAllowInvalidCertificates
             - --clusterAuthMode=x509
-            - --tlsMode=preferTLS
             - --enableEncryption
             - --encryptionKeyFile=/etc/mongodb-encryption/encryption-key
             - --wiredTigerCacheSizeGB=0.25
             - --wiredTigerIndexPrefixCompression=true
             - --config=/etc/mongodb-config/mongod.conf
-            - --quiet
           command:
             - /opt/percona/ps-entry.sh
           env:
@@ -163,7 +161,7 @@ spec:
         fsGroup: 1001
       serviceAccount: default
       serviceAccountName: default
-      terminationGracePeriodSeconds: 60
+      terminationGracePeriodSeconds: 30
       volumes:
         - name: liveness-mongodb-keyfile
           secret:

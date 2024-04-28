@@ -3,10 +3,9 @@ package v1
 import (
 	"fmt"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
+	"github.com/percona/percona-backup-mongodb/pbm"
 	"github.com/percona/percona-backup-mongodb/pbm/compress"
-	"github.com/percona/percona-backup-mongodb/pbm/defs"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // PerconaServerMongoDBBackupSpec defines the desired state of PerconaServerMongoDBBackup
@@ -18,7 +17,7 @@ type PerconaServerMongoDBBackupSpec struct {
 	CompressionLevel *int                     `json:"compressionLevel,omitempty"`
 
 	// +kubebuilder:validation:Enum={logical,physical}
-	Type defs.BackupType `json:"type,omitempty"`
+	Type pbm.BackupType `json:"type,omitempty"`
 }
 
 type BackupState string
@@ -35,7 +34,7 @@ const (
 
 // PerconaServerMongoDBBackupStatus defines the observed state of PerconaServerMongoDBBackup
 type PerconaServerMongoDBBackupStatus struct {
-	Type           defs.BackupType         `json:"type,omitempty"`
+	Type           pbm.BackupType          `json:"type,omitempty"`
 	State          BackupState             `json:"state,omitempty"`
 	StartAt        *metav1.Time            `json:"start,omitempty"`
 	CompletedAt    *metav1.Time            `json:"completed,omitempty"`
@@ -46,12 +45,7 @@ type PerconaServerMongoDBBackupStatus struct {
 	Azure          *BackupStorageAzureSpec `json:"azure,omitempty"`
 	ReplsetNames   []string                `json:"replsetNames,omitempty"`
 	PBMname        string                  `json:"pbmName,omitempty"`
-
-	// Deprecated: Use PBMPods instead
-	PBMPod               string            `json:"pbmPod,omitempty"`
-	PBMPods              map[string]string `json:"pbmPods,omitempty"`
-	Error                string            `json:"error,omitempty"`
-	LatestRestorableTime *metav1.Time      `json:"latestRestorableTime,omitempty"`
+	Error          string                  `json:"error,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -93,7 +87,7 @@ func (p *PerconaServerMongoDBBackup) CheckFields() error {
 		return fmt.Errorf("spec clusterName and deprecated psmdbCluster fields are empty")
 	}
 	if string(p.Spec.Type) == "" {
-		p.Spec.Type = defs.LogicalBackup
+		p.Spec.Type = pbm.LogicalBackup
 	}
 	if string(p.Spec.Compression) == "" {
 		p.Spec.Compression = compress.CompressionTypeGZIP

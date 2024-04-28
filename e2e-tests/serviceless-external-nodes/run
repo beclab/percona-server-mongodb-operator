@@ -8,8 +8,11 @@ set -o xtrace
 test_dir=$(realpath "$(dirname "$0")")
 . "${test_dir}/../functions"
 
-FULL_VER=$(get_mongod_ver_from_image ${IMAGE_MONGOD})
-MONGO_VER=${FULL_VER:0:3}
+if [[ ${IMAGE_MONGOD} == *"percona-server-mongodb-operator"* ]]; then
+	MONGO_VER=$(echo -n "${IMAGE_MONGOD}" | $sed -r 's/.*([0-9].[0-9])$/\1/')
+else
+	MONGO_VER=$(echo -n "${IMAGE_MONGOD}" | $sed -r 's/.*:([0-9]+\.[0-9]+).*$/\1/')
+fi
 unset OPERATOR_NS
 
 desc "Create main cluster"
@@ -46,9 +49,7 @@ cat $tmp_dir/psmdb.yaml \
 
 wait_cluster_consistency ${cluster}
 
-# waiting the config will be ready.
-sleep 30
-run_mongo 'rs.status().members.forEach(function(z){printjson(z.name);printjson(z.stateStr); })' "clusterAdmin:clusterAdmin123456@${cluster}-rs0-0.${cluster}-rs0.${namespace}" "mongodb" | egrep -v 'I NETWORK|W NETWORK|Error saving history file|Percona Server for MongoDB|connecting to:|Unable to reach primary for set|Implicit session:|versions do not match|Error saving history file:|bye' >"$tmp_dir/rs.txt"
+run_mongo 'rs.status().members.forEach(function(z){printjson(z.name);printjson(z.stateStr); })' "clusterAdmin:clusterAdmin123456@${cluster}-rs0-0.${cluster}-rs0.${namespace}" "mongodb" | egrep -v 'I NETWORK|W NETWORK|Error saving history file|Percona Server for MongoDB|connecting to:|Unable to reach primary for set|Implicit session:|versions do not match|bye' >"$tmp_dir/rs.txt"
 
 cat "${test_dir}/compare/rs.txt" \
 	| $sed -e "s/mydb-rs0-0.mydb-rs0.main.svc.cluster.local:27017/mydb-rs0-0.mydb-rs0.$namespace.svc.cluster.local:27017/" \
@@ -58,8 +59,6 @@ cat "${test_dir}/compare/rs.txt" \
 
 diff $tmp_dir/rs-expected.txt "$tmp_dir/rs.txt"
 
-kubectl_bin -n ${replica_namespace} delete psmdb/${cluster}
-destroy $replica_namespace "true"
-destroy $namespace "true"
+destroy "$namespace" "true"
 
-desc "test passed"
+destroy $replica_namespace "true"

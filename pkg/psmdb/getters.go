@@ -3,9 +3,8 @@ package psmdb
 import (
 	"context"
 	"sort"
-	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
+	mgo "go.mongodb.org/mongo-driver/mongo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -26,94 +25,86 @@ func clusterLabels(cr *api.PerconaServerMongoDB) map[string]string {
 	}
 }
 
-func RSLabels(cr *api.PerconaServerMongoDB, rsName string) map[string]string {
+func rsLabels(cr *api.PerconaServerMongoDB, rsName string) map[string]string {
 	lbls := clusterLabels(cr)
 	lbls["app.kubernetes.io/replset"] = rsName
 	return lbls
 }
 
-func MongosLabels(cr *api.PerconaServerMongoDB) map[string]string {
+func mongosLabels(cr *api.PerconaServerMongoDB) map[string]string {
 	lbls := clusterLabels(cr)
 	lbls["app.kubernetes.io/component"] = "mongos"
 	return lbls
 }
 
-// GetRSPods returns truncated list of replicaset pods to the size of `rs.Size`.
-func GetRSPods(ctx context.Context, k8sclient client.Client, cr *api.PerconaServerMongoDB, rsName string) (corev1.PodList, error) {
-	return getRSPods(ctx, k8sclient, cr, rsName, true)
-}
-
-// GetOutdatedRSPods does the same as GetRSPods but doesn't truncate the list of pods
-func GetOutdatedRSPods(ctx context.Context, k8sclient client.Client, cr *api.PerconaServerMongoDB, rsName string) (corev1.PodList, error) {
-	return getRSPods(ctx, k8sclient, cr, rsName, false)
-}
-
-func getRSPods(ctx context.Context, k8sclient client.Client, cr *api.PerconaServerMongoDB, rsName string, trimOutdated bool) (corev1.PodList, error) {
-	rsPods := corev1.PodList{}
-
-	stsList := appsv1.StatefulSetList{} // All statefulsets related to replset `rsName`
-	if err := k8sclient.List(ctx, &stsList,
+func GetRSPods(ctx context.Context, k8sclient client.Client, cr *api.PerconaServerMongoDB, rsName string, includeOutdated bool) (corev1.PodList, error) {
+	pods := corev1.PodList{}
+	err := k8sclient.List(ctx,
+		&pods,
 		&client.ListOptions{
-			Namespace: cr.Namespace,
-			LabelSelector: labels.SelectorFromSet(map[string]string{
-				"app.kubernetes.io/instance": cr.Name,
-				"app.kubernetes.io/replset":  rsName,
-			}),
+			Namespace:     cr.Namespace,
+			LabelSelector: labels.SelectorFromSet(rsLabels(cr, rsName)),
 		},
-	); err != nil {
-		return rsPods, errors.Wrapf(err, "failed to get statefulset list related to replset %s", rsName)
+	)
+	if err != nil {
+		return pods, errors.Wrap(err, "failed to list pods")
 	}
 
-	for _, sts := range stsList.Items {
-		lbls := RSLabels(cr, rsName)
-		lbls["app.kubernetes.io/component"] = sts.Labels["app.kubernetes.io/component"]
-		pods := corev1.PodList{}
-		err := k8sclient.List(ctx,
-			&pods,
-			&client.ListOptions{
-				Namespace:     cr.Namespace,
-				LabelSelector: labels.SelectorFromSet(lbls),
-			},
-		)
-		if err != nil {
-			return rsPods, errors.Wrap(err, "failed to list pods")
-		}
-
-		rs := cr.Spec.Replset(rsName)
-		if trimOutdated && rs != nil {
-			// `k8sclient.List` returns unsorted list of pods
-			// We should sort pods to truncate pods that are going to be deleted during resize
-			// More info: https://github.com/percona/percona-server-mongodb-operator/pull/1323#issue-1904904799
-			sort.Slice(pods.Items, func(i, j int) bool {
-				return pods.Items[i].Name < pods.Items[j].Name
-			})
-
-			// We can't use `sts.Spec.Replicas` because it can be different from `rs.Size`.
-			// This will lead to inserting pods, which are going to be deleted, to the
-			// `replSetReconfig` call in the `updateConfigMembers` function.
-			rsSize := 0
-
-			switch lbls["app.kubernetes.io/component"] {
-			case "arbiter":
-				rsSize = int(rs.Arbiter.Size)
-			case "nonVoting":
-				rsSize = int(rs.NonVoting.Size)
-			default:
-				rsSize = int(rs.Size)
-			}
-			if len(pods.Items) >= rsSize {
-				pods.Items = pods.Items[:rsSize]
-			}
-		}
-
-		rsPods.Items = append(rsPods.Items, pods.Items...)
+	if includeOutdated {
+		return pods, nil
 	}
 
-	return rsPods, nil
+	sort.Slice(pods.Items, func(i, j int) bool {
+		return pods.Items[i].Name < pods.Items[j].Name
+	})
+
+	rs := cr.Spec.Replset(rsName)
+	if rs == nil {
+		return pods, errors.Errorf("replset %s is not found", rsName)
+	}
+
+	var rsPods []corev1.Pod
+	if rs.ClusterRole == api.ClusterRoleConfigSvr {
+		rsPods = filterPodsByComponent(pods, api.ConfigReplSetName)
+	} else {
+		rsPods = filterPodsByComponent(pods, "mongod")
+	}
+
+	arbiterPods := filterPodsByComponent(pods, "arbiter")
+	nvPods := filterPodsByComponent(pods, "nonVoting")
+
+	if len(rsPods) >= int(rs.Size) {
+		rsPods = rsPods[:rs.Size]
+	}
+	if len(arbiterPods) >= int(rs.Arbiter.Size) {
+		arbiterPods = arbiterPods[:rs.Arbiter.Size]
+	}
+	if len(nvPods) >= int(rs.NonVoting.Size) {
+		nvPods = nvPods[:rs.NonVoting.Size]
+	}
+	pods.Items = rsPods
+	pods.Items = append(pods.Items, arbiterPods...)
+	pods.Items = append(pods.Items, nvPods...)
+
+	return pods, nil
 }
 
-func GetPrimaryPod(ctx context.Context, mgoClient mongo.Client) (string, error) {
-	status, err := mgoClient.RSStatus(ctx)
+func filterPodsByComponent(list corev1.PodList, component string) []corev1.Pod {
+	var pods []corev1.Pod
+	for _, pod := range list.Items {
+		v, ok := pod.Labels["app.kubernetes.io/component"]
+		if !ok {
+			continue
+		}
+		if v == component {
+			pods = append(pods, pod)
+		}
+	}
+	return pods
+}
+
+func GetPrimaryPod(ctx context.Context, client *mgo.Client) (string, error) {
+	status, err := mongo.RSStatus(ctx, client)
 	if err != nil {
 		return "", errors.Wrap(err, "failed to get rs status")
 	}
@@ -127,7 +118,7 @@ func GetMongosPods(ctx context.Context, cl client.Client, cr *api.PerconaServerM
 		&pods,
 		&client.ListOptions{
 			Namespace:     cr.Namespace,
-			LabelSelector: labels.SelectorFromSet(MongosLabels(cr)),
+			LabelSelector: labels.SelectorFromSet(mongosLabels(cr)),
 		},
 	)
 
@@ -140,7 +131,7 @@ func GetMongosServices(ctx context.Context, cl client.Client, cr *api.PerconaSer
 		list,
 		&client.ListOptions{
 			Namespace:     cr.Namespace,
-			LabelSelector: labels.SelectorFromSet(MongosLabels(cr)),
+			LabelSelector: labels.SelectorFromSet(mongosLabels(cr)),
 		},
 	)
 	if err != nil {
@@ -165,19 +156,4 @@ func GetExportedServices(ctx context.Context, cl client.Client, cr *api.PerconaS
 	}
 
 	return seList, nil
-}
-
-func GetNodeLabels(ctx context.Context, cl client.Client, cr *api.PerconaServerMongoDB, pod corev1.Pod) (map[string]string, error) {
-	// Set a timeout for the request, to avoid hanging forever
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	node := &corev1.Node{}
-
-	err := cl.Get(ctx, client.ObjectKey{Name: pod.Spec.NodeName}, node)
-	if err != nil {
-		return nil, errors.Wrapf(err, "failed to get node %s", pod.Spec.NodeName)
-	}
-
-	return node.Labels, nil
 }

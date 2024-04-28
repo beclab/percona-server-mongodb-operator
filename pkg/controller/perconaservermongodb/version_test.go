@@ -15,13 +15,14 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/percona/percona-backup-mongodb/pbm/defs"
+	"github.com/percona/percona-backup-mongodb/pbm"
 	"github.com/percona/percona-server-mongodb-operator/pkg/apis"
 	api "github.com/percona/percona-server-mongodb-operator/pkg/apis/psmdb/v1"
 	"github.com/percona/percona-server-mongodb-operator/pkg/k8s"
@@ -330,6 +331,10 @@ func Test_majorUpgradeRequested(t *testing.T) {
 }
 
 func TestVersionMeta(t *testing.T) {
+	q, err := resource.ParseQuantity("1Gi")
+	if err != nil {
+		t.Fatal(err)
+	}
 	tests := []struct {
 		name        string
 		cr          api.PerconaServerMongoDB
@@ -347,9 +352,19 @@ func TestVersionMeta(t *testing.T) {
 					Image: "percona/percona-server-mongodb:5.0.11-10",
 					Replsets: []*api.ReplsetSpec{
 						{
-							Name:       "rs0",
-							Size:       3,
-							VolumeSpec: fakeVolumeSpec(t),
+							Name: "rs0",
+							Size: 3,
+							VolumeSpec: &api.VolumeSpec{
+								PersistentVolumeClaim: api.PVCSpec{
+									PersistentVolumeClaimSpec: &corev1.PersistentVolumeClaimSpec{
+										Resources: corev1.ResourceRequirements{
+											Requests: map[corev1.ResourceName]resource.Quantity{
+												corev1.ResourceStorage: q,
+											},
+										},
+									},
+								},
+							},
 						},
 					},
 				},
@@ -377,9 +392,19 @@ func TestVersionMeta(t *testing.T) {
 					Image:     "percona/percona-server-mongodb:5.0.11-10",
 					Replsets: []*api.ReplsetSpec{
 						{
-							Name:       "rs0",
-							Size:       3,
-							VolumeSpec: fakeVolumeSpec(t),
+							Name: "rs0",
+							Size: 3,
+							VolumeSpec: &api.VolumeSpec{
+								PersistentVolumeClaim: api.PVCSpec{
+									PersistentVolumeClaimSpec: &corev1.PersistentVolumeClaimSpec{
+										Resources: corev1.ResourceRequirements{
+											Requests: map[corev1.ResourceName]resource.Quantity{
+												corev1.ResourceStorage: q,
+											},
+										},
+									},
+								},
+							},
 							MultiAZ: api.MultiAZ{
 								Sidecars: []corev1.Container{
 									{
@@ -399,7 +424,7 @@ func TestVersionMeta(t *testing.T) {
 						},
 						Tasks: []api.BackupTaskSpec{
 							{
-								Type:    defs.PhysicalBackup,
+								Type:    pbm.PhysicalBackup,
 								Enabled: true,
 							},
 						},
@@ -410,7 +435,17 @@ func TestVersionMeta(t *testing.T) {
 					Sharding: api.Sharding{
 						Enabled: true,
 						ConfigsvrReplSet: &api.ReplsetSpec{
-							VolumeSpec: fakeVolumeSpec(t),
+							VolumeSpec: &api.VolumeSpec{
+								PersistentVolumeClaim: api.PVCSpec{
+									PersistentVolumeClaimSpec: &corev1.PersistentVolumeClaimSpec{
+										Resources: corev1.ResourceRequirements{
+											Requests: map[corev1.ResourceName]resource.Quantity{
+												corev1.ResourceStorage: q,
+											},
+										},
+									},
+								},
+							},
 						},
 						Mongos: &api.MongosSpec{},
 					},
@@ -448,9 +483,19 @@ func TestVersionMeta(t *testing.T) {
 					Image: "percona/percona-server-mongodb:5.0.11-10",
 					Replsets: []*api.ReplsetSpec{
 						{
-							Name:       "rs0",
-							Size:       3,
-							VolumeSpec: fakeVolumeSpec(t),
+							Name: "rs0",
+							Size: 3,
+							VolumeSpec: &api.VolumeSpec{
+								PersistentVolumeClaim: api.PVCSpec{
+									PersistentVolumeClaimSpec: &corev1.PersistentVolumeClaimSpec{
+										Resources: corev1.ResourceRequirements{
+											Requests: map[corev1.ResourceName]resource.Quantity{
+												corev1.ResourceStorage: q,
+											},
+										},
+									},
+								},
+							},
 						},
 					},
 					Backup: api.BackupSpec{
@@ -481,9 +526,19 @@ func TestVersionMeta(t *testing.T) {
 					Image: "percona/percona-server-mongodb:5.0.11-10",
 					Replsets: []*api.ReplsetSpec{
 						{
-							Name:       "rs0",
-							Size:       3,
-							VolumeSpec: fakeVolumeSpec(t),
+							Name: "rs0",
+							Size: 3,
+							VolumeSpec: &api.VolumeSpec{
+								PersistentVolumeClaim: api.PVCSpec{
+									PersistentVolumeClaimSpec: &corev1.PersistentVolumeClaimSpec{
+										Resources: corev1.ResourceRequirements{
+											Requests: map[corev1.ResourceName]resource.Quantity{
+												corev1.ResourceStorage: q,
+											},
+										},
+									},
+								},
+							},
 						},
 					},
 				},
@@ -568,7 +623,7 @@ func TestVersionMeta(t *testing.T) {
 			if err := r.setCRVersion(context.TODO(), &tt.cr); err != nil {
 				t.Fatal(err, "set CR version")
 			}
-			err := tt.cr.CheckNSetDefaults(version.PlatformKubernetes, log)
+			err = tt.cr.CheckNSetDefaults(version.PlatformKubernetes, log)
 			if err != nil {
 				t.Fatal(err)
 			}

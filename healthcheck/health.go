@@ -16,15 +16,13 @@ package healthcheck
 
 import (
 	"context"
-	"encoding/json"
 
 	v "github.com/hashicorp/go-version"
+	"github.com/percona/percona-server-mongodb-operator/pkg/psmdb/mongo"
 	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-
-	"github.com/percona/percona-server-mongodb-operator/healthcheck/tools/db"
-	"github.com/percona/percona-server-mongodb-operator/pkg/psmdb/mongo"
+	mgo "go.mongodb.org/mongo-driver/mongo"
 )
 
 // OkMemberStates is a slice of acceptable replication member states
@@ -59,8 +57,8 @@ func isStateOk(memberState *mongo.MemberState, okMemberStates []mongo.MemberStat
 }
 
 // HealthCheck checks the replication member state of the local MongoDB member
-func HealthCheck(client mongo.Client, okMemberStates []mongo.MemberState) (State, *mongo.MemberState, error) {
-	rsStatus, err := client.RSStatus(context.TODO())
+func HealthCheck(client *mgo.Client, okMemberStates []mongo.MemberState) (State, *mongo.MemberState, error) {
+	rsStatus, err := mongo.RSStatus(context.TODO(), client)
 	if err != nil {
 		return StateFailed, nil, errors.Wrap(err, "get replica set status")
 	}
@@ -76,18 +74,8 @@ func HealthCheck(client mongo.Client, okMemberStates []mongo.MemberState) (State
 	return StateFailed, state, errors.Errorf("member has unhealthy replication state: %d", state)
 }
 
-func HealthCheckMongosLiveness(ctx context.Context, cnf *db.Config) (err error) {
-	client, err := db.Dial(ctx, cnf)
-	if err != nil {
-		return errors.Wrap(err, "connection error")
-	}
-	defer func() {
-		if derr := client.Disconnect(ctx); derr != nil && err == nil {
-			err = errors.Wrap(derr, "failed to disconnect")
-		}
-	}()
-
-	isMasterResp, err := client.IsMaster(ctx)
+func HealthCheckMongosLiveness(client *mgo.Client) error {
+	isMasterResp, err := mongo.IsMaster(context.TODO(), client)
 	if err != nil {
 		return errors.Wrap(err, "get isMaster response")
 	}
@@ -99,23 +87,13 @@ func HealthCheckMongosLiveness(ctx context.Context, cnf *db.Config) (err error) 
 	return nil
 }
 
-func HealthCheckMongodLiveness(ctx context.Context, cnf *db.Config, startupDelaySeconds int64) (_ *mongo.MemberState, err error) {
-	client, err := db.Dial(ctx, cnf)
-	if err != nil {
-		return nil, errors.Wrap(err, "connection error")
-	}
-	defer func() {
-		if derr := client.Disconnect(ctx); derr != nil && err == nil {
-			err = errors.Wrap(derr, "failed to disconnect")
-		}
-	}()
-
-	isMasterResp, err := client.IsMaster(ctx)
+func HealthCheckMongodLiveness(client *mgo.Client, startupDelaySeconds int64) (*mongo.MemberState, error) {
+	isMasterResp, err := mongo.IsMaster(context.TODO(), client)
 	if err != nil {
 		return nil, errors.Wrap(err, "get isMaster response")
 	}
 
-	buildInfo, err := client.RSBuildInfo(ctx)
+	buildInfo, err := mongo.RSBuildInfo(context.TODO(), client)
 	if err != nil {
 		return nil, errors.Wrap(err, "get buildInfo response")
 	}
@@ -127,42 +105,25 @@ func HealthCheckMongodLiveness(ctx context.Context, cnf *db.Config, startupDelay
 		replSetStatusCommand = append(replSetStatusCommand, primitive.E{Key: "initialSync", Value: 1})
 	}
 
-	res := client.Database("admin").RunCommand(ctx, replSetStatusCommand)
+	res := client.Database("admin").RunCommand(context.TODO(), replSetStatusCommand)
 	if res.Err() != nil {
 		// if we come this far, it means db connection was successful
 		// standalone mongod nodes in an unmanaged cluster doesn't need
 		// to die before they added to a replset
 		if res.Err().Error() == ErrNoReplsetConfigStr {
-			state := mongo.MemberStateUnknown
-			return &state, nil
+			return nil, nil
 		}
 		return nil, errors.Wrap(res.Err(), "get replsetGetStatus response")
 	}
 
-	// this is a workaround to fix decoding of empty interfaces
-	// https://jira.mongodb.org/browse/GODRIVER-988
 	rsStatus := ReplSetStatus{}
-	tempResult := bson.M{}
-	err = res.Decode(&tempResult)
-	if err != nil {
-		return nil, errors.Wrap(err, "decode replsetGetStatus response")
-	}
-
-	if err == nil {
-		result, err := json.Marshal(tempResult)
-		if err != nil {
-			return nil, errors.Wrap(err, "marshal temp result")
-		}
-
-		err = json.Unmarshal(result, &rsStatus)
-		if err != nil {
-			return nil, errors.Wrap(err, "unmarshal temp result")
-		}
+	if err := res.Decode(&rsStatus); err != nil {
+		return nil, errors.Wrap(err, "get replsetGetStatus response")
 	}
 
 	oplogRs := OplogRs{}
 	if !isMasterResp.IsArbiter {
-		res := client.Database("local").RunCommand(ctx, bson.D{
+		res := client.Database("local").RunCommand(context.TODO(), bson.D{
 			{Key: "collStats", Value: "oplog.rs"},
 			{Key: "scale", Value: 1024 * 1024 * 1024}, // scale size to gigabytes
 		})
@@ -177,7 +138,7 @@ func HealthCheckMongodLiveness(ctx context.Context, cnf *db.Config, startupDelay
 		}
 	}
 
-	var storageSize int64
+	var storageSize int64 = 0
 	if oplogRs.StorageSize > 0 {
 		storageSize = oplogRs.StorageSize
 	}

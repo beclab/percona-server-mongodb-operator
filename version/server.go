@@ -3,6 +3,7 @@ package version
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 
 	k8sversion "k8s.io/apimachinery/pkg/version"
@@ -32,14 +33,14 @@ var (
 
 // Server returns server version and platform (k8s|oc)
 // it performs API requests for the first invocation and then returns "cached" value
-func Server(cl *clientcmd.Client) (*ServerVersion, error) {
+func Server() (*ServerVersion, error) {
 	mx.Lock()
 	defer mx.Unlock()
 	if cVersion != nil {
 		return cVersion, nil
 	}
 
-	v, err := GetServer(cl)
+	v, err := GetServer()
 	if err != nil {
 		return nil, err
 	}
@@ -50,12 +51,15 @@ func Server(cl *clientcmd.Client) (*ServerVersion, error) {
 }
 
 // GetServer make request to platform server and returns server version and platform (k8s|oc)
-func GetServer(cl *clientcmd.Client) (*ServerVersion, error) {
+func GetServer() (*ServerVersion, error) {
+	cl, err := clientcmd.NewClient()
+	if err != nil {
+		return nil, fmt.Errorf("create REST client: %v", err)
+	}
 	client := cl.REST()
 
 	version := &ServerVersion{}
 	// oc 3.9
-	var err error
 	version.Info, err = probeAPI("/version/openshift", client)
 	if err == nil {
 		version.Platform = PlatformOpenshift

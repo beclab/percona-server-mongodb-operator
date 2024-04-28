@@ -22,18 +22,23 @@ import (
 
 	"github.com/alecthomas/kingpin"
 	tools "github.com/percona/percona-server-mongodb-operator/healthcheck"
+	"github.com/percona/percona-server-mongodb-operator/healthcheck/tools/logger"
 )
 
 // Author is the author used by kingpin
 const Author = "Percona LLC."
 
 // New sets up a new kingpin.Application
-func New(help, commit, branch string) *kingpin.Application {
+func New(help, commit, branch string) (*kingpin.Application, *bool) {
 	app := kingpin.New(filepath.Base(os.Args[0]), help)
 	app.Author(Author)
 	app.Version(fmt.Sprintf(
 		"%s version %s\ngit commit %s, branch %s\ngo version %s",
 		app.Name, tools.Version, commit, branch, runtime.Version(),
 	))
-	return app
+	return app, logger.SetupLogger(
+		app,
+		logger.GetLogFormatter(),
+		os.Stdout,
+	)
 }

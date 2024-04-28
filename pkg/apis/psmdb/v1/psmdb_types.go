@@ -1,17 +1,18 @@
 package v1
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
-	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
+	"gopkg.in/yaml.v2"
+
 	"github.com/go-logr/logr"
 	v "github.com/hashicorp/go-version"
+	"github.com/percona/percona-backup-mongodb/pbm"
+	"github.com/percona/percona-backup-mongodb/pbm/compress"
 	"github.com/pkg/errors"
-	"gopkg.in/yaml.v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,10 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	k8sversion "k8s.io/apimachinery/pkg/version"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/percona/percona-backup-mongodb/pbm/compress"
-	"github.com/percona/percona-backup-mongodb/pbm/defs"
 	"github.com/percona/percona-server-mongodb-operator/pkg/mcs"
 	"github.com/percona/percona-server-mongodb-operator/pkg/util/numstr"
 	"github.com/percona/percona-server-mongodb-operator/version"
@@ -73,9 +71,9 @@ type PerconaServerMongoDBSpec struct {
 	Image                        string                               `json:"image"`
 	ImagePullSecrets             []corev1.LocalObjectReference        `json:"imagePullSecrets,omitempty"`
 	UnsafeConf                   bool                                 `json:"allowUnsafeConfigurations,omitempty"`
-	Unsafe                       UnsafeFlags                          `json:"unsafeFlags,omitempty"`
 	IgnoreLabels                 []string                             `json:"ignoreLabels,omitempty"`
 	IgnoreAnnotations            []string                             `json:"ignoreAnnotations,omitempty"`
+	Mongod                       *MongodSpec                          `json:"mongod,omitempty"`
 	Replsets                     []*ReplsetSpec                       `json:"replsets,omitempty"`
 	Secrets                      *SecretsSpec                         `json:"secrets,omitempty"`
 	Backup                       BackupSpec                           `json:"backup,omitempty"`
@@ -93,28 +91,22 @@ type PerconaServerMongoDBSpec struct {
 	TLS                          *TLSSpec                             `json:"tls,omitempty"`
 }
 
-type UnsafeFlags struct {
-	TLS                    bool `json:"tls,omitempty"`
-	ReplsetSize            bool `json:"replsetSize,omitempty"`
-	MongosSize             bool `json:"mongosSize,omitempty"`
-	TerminationGracePeriod bool `json:"terminationGracePeriod,omitempty"`
-	BackupIfUnhealthy      bool `json:"backupIfUnhealthy,omitempty"`
+type TLSSpec struct {
+	CertValidityDuration metav1.Duration `json:"certValidityDuration,omitempty"`
 }
 
-type TLSMode string
-
-const (
-	TLSModeDisabled TLSMode = "disabled"
-	TLSModeAllow    TLSMode = "allowTLS"
-	TLSModePrefer   TLSMode = "preferTLS"
-	TLSModeRequire  TLSMode = "requireTLS"
-)
-
-type TLSSpec struct {
-	Mode                     TLSMode                 `json:"mode,omitempty"`
-	AllowInvalidCertificates *bool                   `json:"allowInvalidCertificates,omitempty"`
-	CertValidityDuration     metav1.Duration         `json:"certValidityDuration,omitempty"`
-	IssuerConf               *cmmeta.ObjectReference `json:"issuerConf,omitempty"`
+// EncryptionKeySecretName returns spec.Secrets.EncryptionKey.
+// If it's empty, spec.Mongod.Security.EncryptionKeySecret is returned.
+//
+// TODO: Remove after 1.14
+func (spec *PerconaServerMongoDBSpec) EncryptionKeySecretName() string {
+	if spec.Secrets != nil && spec.Secrets.EncryptionKey != "" {
+		return spec.Secrets.EncryptionKey
+	}
+	if spec.Mongod != nil && spec.Mongod.Security != nil {
+		return spec.Mongod.Security.EncryptionKeySecret
+	}
+	return ""
 }
 
 func (spec *PerconaServerMongoDBSpec) Replset(name string) *ReplsetSpec {
@@ -156,11 +148,6 @@ type Sharding struct {
 	Enabled          bool         `json:"enabled"`
 	ConfigsvrReplSet *ReplsetSpec `json:"configsvrReplSet,omitempty"`
 	Mongos           *MongosSpec  `json:"mongos,omitempty"`
-	Balancer         BalancerSpec `json:"balancer,omitempty"`
-}
-
-type BalancerSpec struct {
-	Enabled *bool `json:"enabled,omitempty"`
 }
 
 type UpgradeOptions struct {
@@ -202,7 +189,6 @@ type MultiCluster struct {
 type AppState string
 
 const (
-	AppStateNone     AppState = ""
 	AppStateInit     AppState = "initializing"
 	AppStateStopping AppState = "stopping"
 	AppStatePaused   AppState = "paused"
@@ -298,6 +284,12 @@ func (pmm *PMMSpec) HasSecret(secret *corev1.Secret) bool {
 	return false
 }
 
+const (
+	PMMUserKey     = "PMM_SERVER_USER"
+	PMMPasswordKey = "PMM_SERVER_PASSWORD"
+	PMMAPIKey      = "PMM_SERVER_API_KEY"
+)
+
 func (spec *PMMSpec) ShouldUseAPIKeyAuth(secret *corev1.Secret) bool {
 	if _, ok := secret.Data[PMMAPIKey]; !ok {
 		_, okl := secret.Data[PMMUserKey]
@@ -310,17 +302,15 @@ func (spec *PMMSpec) ShouldUseAPIKeyAuth(secret *corev1.Secret) bool {
 }
 
 type MultiAZ struct {
-	Affinity                      *PodAffinity                      `json:"affinity,omitempty"`
-	TopologySpreadConstraints     []corev1.TopologySpreadConstraint `json:"topologySpreadConstraints,omitempty"`
-	NodeSelector                  map[string]string                 `json:"nodeSelector,omitempty"`
-	Tolerations                   []corev1.Toleration               `json:"tolerations,omitempty"`
-	PriorityClassName             string                            `json:"priorityClassName,omitempty"`
-	ServiceAccountName            string                            `json:"serviceAccountName,omitempty"`
-	Annotations                   map[string]string                 `json:"annotations,omitempty"`
-	Labels                        map[string]string                 `json:"labels,omitempty"`
-	PodDisruptionBudget           *PodDisruptionBudgetSpec          `json:"podDisruptionBudget,omitempty"`
-	TerminationGracePeriodSeconds *int64                            `json:"terminationGracePeriodSeconds,omitempty"`
-	RuntimeClassName              *string                           `json:"runtimeClassName,omitempty"`
+	Affinity            *PodAffinity             `json:"affinity,omitempty"`
+	NodeSelector        map[string]string        `json:"nodeSelector,omitempty"`
+	Tolerations         []corev1.Toleration      `json:"tolerations,omitempty"`
+	PriorityClassName   string                   `json:"priorityClassName,omitempty"`
+	ServiceAccountName  string                   `json:"serviceAccountName,omitempty"`
+	Annotations         map[string]string        `json:"annotations,omitempty"`
+	Labels              map[string]string        `json:"labels,omitempty"`
+	PodDisruptionBudget *PodDisruptionBudgetSpec `json:"podDisruptionBudget,omitempty"`
+	RuntimeClassName    *string                  `json:"runtimeClassName,omitempty"`
 
 	Resources corev1.ResourceRequirements `json:"resources,omitempty"`
 
@@ -443,35 +433,6 @@ func (conf MongoConfiguration) GetOptions(name string) (map[interface{}]interfac
 	return options, nil
 }
 
-func (conf MongoConfiguration) GetTLSMode() (string, error) {
-	m, err := conf.GetOptions("net")
-	if err != nil || m == nil {
-		return "", err
-	}
-
-	tls, ok := m["tls"]
-	if !ok {
-		return "", nil
-	}
-
-	tlsMap, ok := tls.(map[any]any)
-	if !ok {
-		return "", errors.New("tls configuration is invalid")
-	}
-
-	tlsMode, ok := tlsMap["mode"]
-	if !ok {
-		return "", nil
-	}
-
-	mode, ok := tlsMode.(string)
-	if !ok {
-		return "", errors.Errorf("can't cast %s to string", mode)
-	}
-
-	return mode, nil
-}
-
 // IsEncryptionEnabled returns nil if "enableEncryption" field is not specified or the pointer to the value of this field
 func (conf MongoConfiguration) IsEncryptionEnabled() (*bool, error) {
 	m, err := conf.GetOptions("security")
@@ -497,27 +458,6 @@ func (conf MongoConfiguration) VaultEnabled() bool {
 	}
 	_, ok := m["vault"]
 	return ok
-}
-
-// QuietEnabled returns whether mongo config has `quiet` set to true under `systemLog` section.
-// If `quiet` or `systemLog` sections are not present, returns true.
-func (conf MongoConfiguration) QuietEnabled() bool {
-	defaultValue := true
-
-	m, err := conf.GetOptions("systemLog")
-	if err != nil || m == nil {
-		return defaultValue
-	}
-	v, ok := m["quiet"]
-	if !ok {
-		return defaultValue
-	}
-	b, ok := v.(bool)
-	if !ok {
-		return defaultValue
-	}
-
-	return b
 }
 
 // setEncryptionDefaults sets encryptionKeyFile to a default value if enableEncryption is specified.
@@ -564,8 +504,6 @@ func (conf *MongoConfiguration) SetDefaults() error {
 	return nil
 }
 
-type HorizonsSpec map[string]map[string]string
-
 type ReplsetSpec struct {
 	MultiAZ `json:",inline"`
 
@@ -583,12 +521,6 @@ type ReplsetSpec struct {
 	Configuration            MongoConfiguration         `json:"configuration,omitempty"`
 	ExternalNodes            []*ExternalNode            `json:"externalNodes,omitempty"`
 	NonVoting                NonVotingSpec              `json:"nonvoting,omitempty"`
-	HostAliases              []corev1.HostAlias         `json:"hostAliases,omitempty"`
-	Horizons                 HorizonsSpec               `json:"splitHorizons,omitempty"`
-}
-
-func (r *ReplsetSpec) PodName(cr *PerconaServerMongoDB, idx int) string {
-	return fmt.Sprintf("%s-%s-%d", cr.Name, r.Name, idx)
 }
 
 func (r *ReplsetSpec) ServiceName(cr *PerconaServerMongoDB) string {
@@ -604,49 +536,7 @@ func (r *ReplsetSpec) PodFQDN(cr *PerconaServerMongoDB, podName string) string {
 }
 
 func (r *ReplsetSpec) PodFQDNWithPort(cr *PerconaServerMongoDB, podName string) string {
-	return fmt.Sprintf("%s:%d", r.PodFQDN(cr, podName), DefaultMongodPort)
-}
-
-func (r ReplsetSpec) CustomReplsetName() (string, error) {
-	var cfg struct {
-		Replication struct {
-			ReplSetName string `yaml:"replSetName,omitempty"`
-		} `yaml:"replication,omitempty"`
-	}
-
-	err := yaml.Unmarshal([]byte(r.Configuration), &cfg)
-	if err != nil {
-		return cfg.Replication.ReplSetName, errors.Wrap(err, "unmarshal configuration")
-	}
-
-	if len(cfg.Replication.ReplSetName) == 0 {
-		return cfg.Replication.ReplSetName, errors.New("replSetName is not configured")
-	}
-
-	return cfg.Replication.ReplSetName, nil
-}
-
-func (r *ReplsetSpec) MongodLabels(cr *PerconaServerMongoDB) map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":       "percona-server-mongodb",
-		"app.kubernetes.io/instance":   cr.Name,
-		"app.kubernetes.io/replset":    r.Name,
-		"app.kubernetes.io/managed-by": "percona-server-mongodb-operator",
-		"app.kubernetes.io/part-of":    "percona-server-mongodb",
-		"app.kubernetes.io/component":  "mongod",
-	}
-}
-
-func (r *ReplsetSpec) ArbiterLabels(cr *PerconaServerMongoDB) map[string]string {
-	ls := r.MongodLabels(cr)
-	ls["app.kubernetes.io/component"] = "arbiter"
-	return ls
-}
-
-func (r *ReplsetSpec) NonVotingLabels(cr *PerconaServerMongoDB) map[string]string {
-	ls := r.MongodLabels(cr)
-	ls["app.kubernetes.io/component"] = "nonVoting"
-	return ls
+	return fmt.Sprintf("%s:%d", r.PodFQDN(cr, podName), MongodPort(cr))
 }
 
 type LivenessProbeExtended struct {
@@ -695,16 +585,6 @@ type SecretsSpec struct {
 	SSLInternal   string `json:"sslInternal,omitempty"`
 	EncryptionKey string `json:"encryptionKey,omitempty"`
 	Vault         string `json:"vault,omitempty"`
-	SSE           string `json:"sse,omitempty"`
-	LDAPSecret    string `json:"ldapSecret,omitempty"`
-}
-
-func SSLSecretName(cr *PerconaServerMongoDB) string {
-	return cr.Spec.Secrets.SSL
-}
-
-func SSLInternalSecretName(cr *PerconaServerMongoDB) string {
-	return cr.Spec.Secrets.SSLInternal
 }
 
 type MongosSpec struct {
@@ -713,6 +593,7 @@ type MongosSpec struct {
 	Port                     int32                      `json:"port,omitempty"`
 	HostPort                 int32                      `json:"hostPort,omitempty"`
 	SetParameter             *MongosSpecSetParameter    `json:"setParameter,omitempty"`
+	AuditLog                 *MongoSpecAuditLog         `json:"auditLog,omitempty"`
 	Expose                   MongosExpose               `json:"expose,omitempty"`
 	Size                     int32                      `json:"size,omitempty"`
 	ReadinessProbe           *corev1.Probe              `json:"readinessProbe,omitempty"`
@@ -720,7 +601,48 @@ type MongosSpec struct {
 	PodSecurityContext       *corev1.PodSecurityContext `json:"podSecurityContext,omitempty"`
 	ContainerSecurityContext *corev1.SecurityContext    `json:"containerSecurityContext,omitempty"`
 	Configuration            MongoConfiguration         `json:"configuration,omitempty"`
-	HostAliases              []corev1.HostAlias         `json:"hostAliases,omitempty"`
+}
+
+type MongodSpec struct {
+	Net                *MongodSpecNet                `json:"net,omitempty"`
+	AuditLog           *MongoSpecAuditLog            `json:"auditLog,omitempty"`
+	OperationProfiling *MongodSpecOperationProfiling `json:"operationProfiling,omitempty"`
+	Replication        *MongodSpecReplication        `json:"replication,omitempty"`
+	Security           *MongodSpecSecurity           `json:"security,omitempty"`
+	SetParameter       *MongodSpecSetParameter       `json:"setParameter,omitempty"`
+	Storage            *MongodSpecStorage            `json:"storage,omitempty"`
+}
+
+type MongodSpecNet struct {
+	Port     int32 `json:"port,omitempty"`
+	HostPort int32 `json:"hostPort,omitempty"`
+}
+
+type MongodSpecReplication struct {
+	OplogSizeMB int `json:"oplogSizeMB,omitempty"`
+}
+
+// MongodChiperMode is a cipher mode used by Data-at-Rest Encryption
+type MongodChiperMode string
+
+const (
+	MongodChiperModeUnset MongodChiperMode = ""
+	MongodChiperModeCBC   MongodChiperMode = "AES256-CBC"
+	MongodChiperModeGCM   MongodChiperMode = "AES256-GCM"
+)
+
+type MongodSpecSecurity struct {
+	RedactClientLogData  bool             `json:"redactClientLogData,omitempty"`
+	EnableEncryption     *bool            `json:"enableEncryption,omitempty"`
+	EncryptionKeySecret  string           `json:"encryptionKeySecret,omitempty"`
+	EncryptionCipherMode MongodChiperMode `json:"encryptionCipherMode,omitempty"`
+}
+
+type MongodSpecSetParameter struct {
+	TTLMonitorSleepSecs                   int `json:"ttlMonitorSleepSecs,omitempty"`
+	WiredTigerConcurrentReadTransactions  int `json:"wiredTigerConcurrentReadTransactions,omitempty"`
+	WiredTigerConcurrentWriteTransactions int `json:"wiredTigerConcurrentWriteTransactions,omitempty"`
+	CursorTimeoutMillis                   int `json:"cursorTimeoutMillis,omitempty"`
 }
 
 type MongosSpecSetParameter struct {
@@ -796,12 +718,24 @@ var (
 	AuditLogFormatJSON AuditLogFormat = "JSON"
 )
 
+type MongoSpecAuditLog struct {
+	Destination AuditLogDestination `json:"destination,omitempty"`
+	Format      AuditLogFormat      `json:"format,omitempty"`
+	Filter      string              `json:"filter,omitempty"`
+}
+
 type OperationProfilingMode string
 
 const (
 	OperationProfilingModeAll    OperationProfilingMode = "all"
 	OperationProfilingModeSlowOp OperationProfilingMode = "slowOp"
 )
+
+type MongodSpecOperationProfiling struct {
+	Mode              OperationProfilingMode `json:"mode,omitempty"`
+	SlowOpThresholdMs int                    `json:"slowOpThresholdMs,omitempty"`
+	RateLimit         int                    `json:"rateLimit,omitempty"`
+}
 
 type BackupTaskSpec struct {
 	Name             string                   `json:"name"`
@@ -813,54 +747,29 @@ type BackupTaskSpec struct {
 	CompressionLevel *int                     `json:"compressionLevel,omitempty"`
 
 	// +kubebuilder:validation:Enum={logical,physical}
-	Type defs.BackupType `json:"type,omitempty"`
+	Type pbm.BackupType `json:"type,omitempty"`
 }
 
 func (task *BackupTaskSpec) JobName(cr *PerconaServerMongoDB) string {
 	return fmt.Sprintf("%s-backup-%s-%s", cr.Name, task.Name, cr.Namespace)
 }
 
-type S3ServiceSideEncryption struct {
-	// Used to specify the SSE algorithm used when keys are managed by the server
-	SSEAlgorithm string `json:"sseAlgorithm,omitempty"`
-	KMSKeyID     string `json:"kmsKeyID,omitempty"`
-
-	// Used to specify SSE-C style encryption. For Amazon S3 SSECustomerAlgorithm must be 'AES256'
-	// see https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerSideEncryptionCustomerKeys.html
-	SSECustomerAlgorithm string `json:"sseCustomerAlgorithm,omitempty"`
-
-	// If SSECustomerAlgorithm is set, this must be a base64 encoded key compatible with the algorithm
-	// specified in the SseCustomerAlgorithm field.
-	SSECustomerKey string `json:"sseCustomerKey,omitempty"`
-}
-
-type Retryer struct {
-	NumMaxRetries int             `json:"numMaxRetries,omitempty"`
-	MinRetryDelay metav1.Duration `json:"minRetryDelay,omitempty"`
-	MaxRetryDelay metav1.Duration `json:"maxRetryDelay,omitempty"`
-}
-
 type BackupStorageS3Spec struct {
-	Bucket                string                  `json:"bucket"`
-	Prefix                string                  `json:"prefix,omitempty"`
-	Region                string                  `json:"region,omitempty"`
-	EndpointURL           string                  `json:"endpointUrl,omitempty"`
-	CredentialsSecret     string                  `json:"credentialsSecret,omitempty"`
-	UploadPartSize        int                     `json:"uploadPartSize,omitempty"`
-	MaxUploadParts        int                     `json:"maxUploadParts,omitempty"`
-	StorageClass          string                  `json:"storageClass,omitempty"`
-	InsecureSkipTLSVerify bool                    `json:"insecureSkipTLSVerify,omitempty"`
-	ForcePathStyle        *bool                   `json:"forcePathStyle,omitempty"`
-	DebugLogLevels        string                  `json:"debugLogLevels,omitempty"`
-	Retryer               *Retryer                `json:"retryer,omitempty"`
-	ServerSideEncryption  S3ServiceSideEncryption `json:"serverSideEncryption,omitempty"`
+	Bucket                string `json:"bucket"`
+	Prefix                string `json:"prefix,omitempty"`
+	Region                string `json:"region,omitempty"`
+	EndpointURL           string `json:"endpointUrl,omitempty"`
+	CredentialsSecret     string `json:"credentialsSecret,omitempty"`
+	UploadPartSize        int    `json:"uploadPartSize,omitempty"`
+	MaxUploadParts        int    `json:"maxUploadParts,omitempty"`
+	StorageClass          string `json:"storageClass,omitempty"`
+	InsecureSkipTLSVerify bool   `json:"insecureSkipTLSVerify,omitempty"`
 }
 
 type BackupStorageAzureSpec struct {
 	Container         string `json:"container,omitempty"`
 	Prefix            string `json:"prefix,omitempty"`
 	CredentialsSecret string `json:"credentialsSecret"`
-	EndpointURL       string `json:"endpointUrl,omitempty"`
 }
 
 type BackupStorageType string
@@ -880,7 +789,6 @@ type BackupStorageSpec struct {
 type PITRSpec struct {
 	Enabled          bool                     `json:"enabled,omitempty"`
 	OplogSpanMin     numstr.NumberString      `json:"oplogSpanMin,omitempty"`
-	OplogOnly        bool                     `json:"oplogOnly,omitempty"`
 	CompressionType  compress.CompressionType `json:"compressionType,omitempty"`
 	CompressionLevel *int                     `json:"compressionLevel,omitempty"`
 }
@@ -888,31 +796,6 @@ type PITRSpec struct {
 func (p PITRSpec) Disabled() PITRSpec {
 	p.Enabled = false
 	return p
-}
-
-type BackupTimeouts struct {
-	Starting *uint32 `json:"startingStatus,omitempty"`
-}
-
-type BackupOptions struct {
-	OplogSpanMin float64            `json:"oplogSpanMin"`
-	Priority     map[string]float64 `json:"priority,omitempty"`
-	Timeouts     *BackupTimeouts    `json:"timeouts,omitempty"`
-}
-
-type RestoreOptions struct {
-	BatchSize           int               `json:"batchSize,omitempty"`
-	NumInsertionWorkers int               `json:"numInsertionWorkers,omitempty"`
-	NumDownloadWorkers  int               `json:"numDownloadWorkers,omitempty"`
-	MaxDownloadBufferMb int               `json:"maxDownloadBufferMb,omitempty"`
-	DownloadChunkMb     int               `json:"downloadChunkMb,omitempty"`
-	MongodLocation      string            `json:"mongodLocation,omitempty"`
-	MongodLocationMap   map[string]string `json:"mongodLocationMap,omitempty"`
-}
-
-type BackupConfig struct {
-	BackupOptions  *BackupOptions  `json:"backupOptions,omitempty"`
-	RestoreOptions *RestoreOptions `json:"restoreOptions,omitempty"`
 }
 
 type BackupSpec struct {
@@ -928,7 +811,6 @@ type BackupSpec struct {
 	Resources                corev1.ResourceRequirements  `json:"resources,omitempty"`
 	RuntimeClassName         *string                      `json:"runtimeClassName,omitempty"`
 	PITR                     PITRSpec                     `json:"pitr,omitempty"`
-	Configuration            BackupConfig                 `json:"configuration,omitempty"`
 }
 
 func (b BackupSpec) IsEnabledPITR() bool {
@@ -972,7 +854,6 @@ type Expose struct {
 	LoadBalancerSourceRanges []string           `json:"loadBalancerSourceRanges,omitempty"`
 	ServiceAnnotations       map[string]string  `json:"serviceAnnotations,omitempty"`
 	ServiceLabels            map[string]string  `json:"serviceLabels,omitempty"`
-	NodePort                 int32              `json:"nodePort,omitempty"`
 }
 
 func (e *Expose) SaveOldMeta() bool {
@@ -1012,55 +893,9 @@ func (cr *PerconaServerMongoDB) CompareVersion(version string) int {
 	return cr.Version().Compare(v.Must(v.NewVersion(version)))
 }
 
-func (cr *PerconaServerMongoDB) CompareMongoDBVersion(version string) (int, error) {
-	mongoVer, err := v.NewVersion(cr.Status.MongoVersion)
-	if err != nil {
-		return 0, errors.Wrap(err, "parse status.mongoVersion")
-	}
-
-	compare, err := v.NewVersion(version)
-	if err != nil {
-		return 0, errors.Wrap(err, "parse version")
-	}
-
-	return mongoVer.Compare(compare), nil
-}
-
 const (
 	internalPrefix = "internal-"
 	userPostfix    = "-users"
-)
-
-const (
-	PMMUserKey     = "PMM_SERVER_USER"
-	PMMPasswordKey = "PMM_SERVER_PASSWORD"
-	PMMAPIKey      = "PMM_SERVER_API_KEY"
-)
-
-const (
-	EnvMongoDBDatabaseAdminUser      = "MONGODB_DATABASE_ADMIN_USER"
-	EnvMongoDBDatabaseAdminPassword  = "MONGODB_DATABASE_ADMIN_PASSWORD"
-	EnvMongoDBClusterAdminUser       = "MONGODB_CLUSTER_ADMIN_USER"
-	EnvMongoDBClusterAdminPassword   = "MONGODB_CLUSTER_ADMIN_PASSWORD"
-	EnvMongoDBUserAdminUser          = "MONGODB_USER_ADMIN_USER"
-	EnvMongoDBUserAdminPassword      = "MONGODB_USER_ADMIN_PASSWORD"
-	EnvMongoDBBackupUser             = "MONGODB_BACKUP_USER"
-	EnvMongoDBBackupPassword         = "MONGODB_BACKUP_PASSWORD"
-	EnvMongoDBClusterMonitorUser     = "MONGODB_CLUSTER_MONITOR_USER"
-	EnvMongoDBClusterMonitorPassword = "MONGODB_CLUSTER_MONITOR_PASSWORD"
-	EnvPMMServerUser                 = PMMUserKey
-	EnvPMMServerPassword             = PMMPasswordKey
-	EnvPMMServerAPIKey               = PMMAPIKey
-)
-
-type UserRole string
-
-const (
-	RoleDatabaseAdmin  UserRole = "databaseAdmin"
-	RoleClusterAdmin   UserRole = "clusterAdmin"
-	RoleUserAdmin      UserRole = "userAdmin"
-	RoleClusterMonitor UserRole = "clusterMonitor"
-	RoleBackup         UserRole = "backup"
 )
 
 func InternalUserSecretName(cr *PerconaServerMongoDB) string {
@@ -1084,9 +919,7 @@ func (cr *PerconaServerMongoDB) MongosNamespacedName() types.NamespacedName {
 	return types.NamespacedName{Name: cr.Name + "-" + "mongos", Namespace: cr.Namespace}
 }
 
-func (cr *PerconaServerMongoDB) CanBackup(ctx context.Context) error {
-	logf.FromContext(ctx).V(1).Info("checking if backup is allowed", "backup", cr.Name)
-
+func (cr *PerconaServerMongoDB) CanBackup() error {
 	if cr.Spec.Unmanaged {
 		return errors.Errorf("backups are not allowed on unmanaged clusters")
 	}
@@ -1095,12 +928,8 @@ func (cr *PerconaServerMongoDB) CanBackup(ctx context.Context) error {
 		return nil
 	}
 
-	if cr.CompareVersion("1.15.0") <= 0 && !cr.Spec.UnsafeConf {
+	if !cr.Spec.UnsafeConf {
 		return errors.Errorf("allowUnsafeConfigurations must be true to run backup on cluster with status %s", cr.Status.State)
-	}
-
-	if cr.CompareVersion("1.16.0") >= 0 && !cr.Spec.Unsafe.BackupIfUnhealthy {
-		return errors.Errorf("spec.unsafeFlags.backupIfUnhealthy must be true to run backup on cluster with status %s", cr.Status.State)
 	}
 
 	for rsName, rs := range cr.Status.Replsets {
@@ -1197,31 +1026,4 @@ func (cr *PerconaServerMongoDB) GetOrderedFinalizers() []string {
 	return orderedFinalizers
 }
 
-func (cr *PerconaServerMongoDB) TLSEnabled() bool {
-	if cr.CompareVersion("1.16.0") < 0 {
-		return !cr.Spec.UnsafeConf
-	}
-
-	switch cr.Spec.TLS.Mode {
-	case TLSModeDisabled:
-		return false
-	case TLSModeAllow, TLSModePrefer, TLSModeRequire:
-		return true
-	default:
-		return true
-	}
-}
-
-func (cr *PerconaServerMongoDB) UnsafeTLSDisabled() bool {
-	return (cr.CompareVersion("1.16.0") >= 0 && cr.Spec.Unsafe.TLS) || (cr.CompareVersion("1.16.0") < 0 && cr.Spec.UnsafeConf)
-}
-
-const (
-	AnnotationResyncPBM           = "percona.com/resync-pbm"
-	AnnotationPVCResizeInProgress = "percona.com/pvc-resize-in-progress"
-)
-
-func (cr *PerconaServerMongoDB) PVCResizeInProgress() bool {
-	_, ok := cr.Annotations[AnnotationPVCResizeInProgress]
-	return ok
-}
+const AnnotationResyncPBM = "percona.com/resync-pbm"

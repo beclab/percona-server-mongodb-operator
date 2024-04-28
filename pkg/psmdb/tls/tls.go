@@ -110,7 +110,10 @@ func Issue(hosts []string) (caCert []byte, tlsCert []byte, tlsKey []byte, err er
 
 // Config returns tls.Config to be used in mongo.Config
 func Config(ctx context.Context, k8sclient client.Client, cr *api.PerconaServerMongoDB) (tls.Config, error) {
-	secretName := api.SSLSecretName(cr)
+	secretName := cr.Spec.Secrets.SSL
+	if len(secretName) == 0 {
+		secretName = cr.Name + "-ssl"
+	}
 	certSecret := &corev1.Secret{}
 	err := k8sclient.Get(ctx, types.NamespacedName{
 		Name:      secretName,
@@ -134,47 +137,12 @@ func Config(ctx context.Context, k8sclient client.Client, cr *api.PerconaServerM
 	}, nil
 }
 
-func getShardingSans(cr *api.PerconaServerMongoDB) []string {
-	sans := []string{
-		cr.Name + "-mongos",
-		cr.Name + "-mongos" + "." + cr.Namespace,
-		cr.Name + "-mongos" + "." + cr.Namespace + "." + cr.Spec.ClusterServiceDNSSuffix,
-		"*." + cr.Name + "-mongos",
-		"*." + cr.Name + "-mongos" + "." + cr.Namespace,
-		"*." + cr.Name + "-mongos" + "." + cr.Namespace + "." + cr.Spec.ClusterServiceDNSSuffix,
-		cr.Name + "-" + api.ConfigReplSetName,
-		cr.Name + "-" + api.ConfigReplSetName + "." + cr.Namespace,
-		cr.Name + "-" + api.ConfigReplSetName + "." + cr.Namespace + "." + cr.Spec.ClusterServiceDNSSuffix,
-		"*." + cr.Name + "-" + api.ConfigReplSetName,
-		"*." + cr.Name + "-" + api.ConfigReplSetName + "." + cr.Namespace,
-		"*." + cr.Name + "-" + api.ConfigReplSetName + "." + cr.Namespace + "." + cr.Spec.ClusterServiceDNSSuffix,
-		cr.Name + "-mongos" + "." + cr.Namespace + "." + cr.Spec.MultiCluster.DNSSuffix,
-		"*." + cr.Name + "-mongos" + "." + cr.Namespace + "." + cr.Spec.MultiCluster.DNSSuffix,
-		cr.Name + "-" + api.ConfigReplSetName + "." + cr.Namespace + "." + cr.Spec.MultiCluster.DNSSuffix,
-		"*." + cr.Name + "-" + api.ConfigReplSetName + "." + cr.Namespace + "." + cr.Spec.MultiCluster.DNSSuffix,
-	}
-	return sans
-}
+func ParseTLSCert(tlsCert []byte) (*x509.Certificate, error) {
+	block, _ := pem.Decode(tlsCert)
 
-func GetCertificateSans(cr *api.PerconaServerMongoDB) []string {
-	sans := []string{"localhost"}
-	for _, replset := range cr.Spec.Replsets {
-		sans = append(sans, []string{
-			cr.Name + "-" + replset.Name,
-			cr.Name + "-" + replset.Name + "." + cr.Namespace,
-			cr.Name + "-" + replset.Name + "." + cr.Namespace + "." + cr.Spec.ClusterServiceDNSSuffix,
-			"*." + cr.Name + "-" + replset.Name,
-			"*." + cr.Name + "-" + replset.Name + "." + cr.Namespace,
-			"*." + cr.Name + "-" + replset.Name + "." + cr.Namespace + "." + cr.Spec.ClusterServiceDNSSuffix,
-			cr.Name + "-" + replset.Name + "." + cr.Namespace + "." + cr.Spec.MultiCluster.DNSSuffix,
-			"*." + cr.Name + "-" + replset.Name + "." + cr.Namespace + "." + cr.Spec.MultiCluster.DNSSuffix,
-		}...)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, errors.Wrap(err, "parse certificate")
 	}
-	if cr.CompareVersion("1.13.0") >= 0 {
-		sans = append(sans, "*."+cr.Namespace+"."+cr.Spec.MultiCluster.DNSSuffix)
-	}
-
-	sans = append(sans, getShardingSans(cr)...)
-
-	return sans
+	return cert, nil
 }

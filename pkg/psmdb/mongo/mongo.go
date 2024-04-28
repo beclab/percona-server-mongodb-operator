@@ -27,55 +27,7 @@ type Config struct {
 	Direct      bool
 }
 
-type Client interface {
-	Disconnect(ctx context.Context) error
-	Database(name string, opts ...*options.DatabaseOptions) ClientDatabase
-	Ping(ctx context.Context, rp *readpref.ReadPref) error
-
-	SetDefaultRWConcern(ctx context.Context, readConcern, writeConcern string) error
-	ReadConfig(ctx context.Context) (RSConfig, error)
-	CreateRole(ctx context.Context, role string, privileges []RolePrivilege, roles []interface{}) error
-	UpdateRole(ctx context.Context, role string, privileges []RolePrivilege, roles []interface{}) error
-	GetRole(ctx context.Context, role string) (*Role, error)
-	CreateUser(ctx context.Context, user, pwd string, roles ...map[string]interface{}) error
-	AddShard(ctx context.Context, rsName, host string) error
-	WriteConfig(ctx context.Context, cfg RSConfig) error
-	RSStatus(ctx context.Context) (Status, error)
-	StartBalancer(ctx context.Context) error
-	StopBalancer(ctx context.Context) error
-	IsBalancerRunning(ctx context.Context) (bool, error)
-	GetFCV(ctx context.Context) (string, error)
-	SetFCV(ctx context.Context, version string) error
-	ListDBs(ctx context.Context) (DBList, error)
-	ListShard(ctx context.Context) (ShardList, error)
-	RemoveShard(ctx context.Context, shard string) (ShardRemoveResp, error)
-	RSBuildInfo(ctx context.Context) (BuildInfo, error)
-	StepDown(ctx context.Context, seconds int, force bool) error
-	Freeze(ctx context.Context, seconds int) error
-	IsMaster(ctx context.Context) (*IsMasterResp, error)
-	GetUserInfo(ctx context.Context, username string) (*User, error)
-	UpdateUserRoles(ctx context.Context, username string, roles []map[string]interface{}) error
-	UpdateUserPass(ctx context.Context, name, pass string) error
-	UpdateUser(ctx context.Context, currName, newName, pass string) error
-}
-
-type ClientDatabase interface {
-	RunCommand(ctx context.Context, runCommand interface{}, opts ...*options.RunCmdOptions) *mongo.SingleResult
-}
-
-type mongoClient struct {
-	*mongo.Client
-}
-
-func (c *mongoClient) Database(name string, opts ...*options.DatabaseOptions) ClientDatabase {
-	return c.Client.Database(name, opts...)
-}
-
-func ToInterface(client *mongo.Client) Client {
-	return &mongoClient{client}
-}
-
-func Dial(conf *Config) (Client, error) {
+func Dial(conf *Config) (*mongo.Client, error) {
 	ctx, connectcancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer connectcancel()
 
@@ -112,10 +64,10 @@ func Dial(conf *Config) (Client, error) {
 		return nil, errors.Wrap(err, "ping mongo")
 	}
 
-	return ToInterface(client), nil
+	return client, nil
 }
 
-func (client *mongoClient) SetDefaultRWConcern(ctx context.Context, readConcern, writeConcern string) error {
+func SetDefaultRWConcern(ctx context.Context, client *mongo.Client, readConcern, writeConcern string) error {
 	cmd := bson.D{
 		{Key: "setDefaultRWConcern", Value: 1},
 		{Key: "defaultReadConcern", Value: bson.D{{Key: "level", Value: readConcern}}},
@@ -130,7 +82,7 @@ func (client *mongoClient) SetDefaultRWConcern(ctx context.Context, readConcern,
 	return nil
 }
 
-func (client *mongoClient) ReadConfig(ctx context.Context) (RSConfig, error) {
+func ReadConfig(ctx context.Context, client *mongo.Client) (RSConfig, error) {
 	resp := ReplSetGetConfig{}
 	res := client.Database("admin").RunCommand(ctx, bson.D{{Key: "replSetGetConfig", Value: 1}})
 	if res.Err() != nil {
@@ -147,7 +99,7 @@ func (client *mongoClient) ReadConfig(ctx context.Context) (RSConfig, error) {
 	return *resp.Config, nil
 }
 
-func (client *mongoClient) CreateRole(ctx context.Context, role string, privileges []RolePrivilege, roles []interface{}) error {
+func CreateRole(ctx context.Context, client *mongo.Client, role string, privileges []RolePrivilege, roles []interface{}) error {
 	resp := OKResponse{}
 
 	privilegesArr := bson.A{}
@@ -183,7 +135,7 @@ func (client *mongoClient) CreateRole(ctx context.Context, role string, privileg
 	return nil
 }
 
-func (client *mongoClient) UpdateRole(ctx context.Context, role string, privileges []RolePrivilege, roles []interface{}) error {
+func UpdateRole(ctx context.Context, client *mongo.Client, role string, privileges []RolePrivilege, roles []interface{}) error {
 	resp := OKResponse{}
 
 	privilegesArr := bson.A{}
@@ -219,7 +171,7 @@ func (client *mongoClient) UpdateRole(ctx context.Context, role string, privileg
 	return nil
 }
 
-func (client *mongoClient) GetRole(ctx context.Context, role string) (*Role, error) {
+func GetRole(ctx context.Context, client *mongo.Client, role string) (*Role, error) {
 	resp := RoleInfo{}
 
 	res := client.Database("admin").RunCommand(ctx, bson.D{
@@ -243,7 +195,7 @@ func (client *mongoClient) GetRole(ctx context.Context, role string) (*Role, err
 	return &resp.Roles[0], nil
 }
 
-func (client *mongoClient) CreateUser(ctx context.Context, user, pwd string, roles ...map[string]interface{}) error {
+func CreateUser(ctx context.Context, client *mongo.Client, user, pwd string, roles ...map[string]interface{}) error {
 	resp := OKResponse{}
 
 	res := client.Database("admin").RunCommand(ctx, bson.D{
@@ -267,7 +219,7 @@ func (client *mongoClient) CreateUser(ctx context.Context, user, pwd string, rol
 	return nil
 }
 
-func (client *mongoClient) AddShard(ctx context.Context, rsName, host string) error {
+func AddShard(ctx context.Context, client *mongo.Client, rsName, host string) error {
 	resp := OKResponse{}
 
 	res := client.Database("admin").RunCommand(ctx, bson.D{{Key: "addShard", Value: rsName + "/" + host}})
@@ -286,8 +238,7 @@ func (client *mongoClient) AddShard(ctx context.Context, rsName, host string) er
 	return nil
 }
 
-func (client *mongoClient) WriteConfig(ctx context.Context, cfg RSConfig) error {
-	log := logf.FromContext(ctx)
+func WriteConfig(ctx context.Context, client *mongo.Client, cfg RSConfig) error {
 	resp := OKResponse{}
 
 	log.V(1).Info("Running replSetReconfig config", "cfg", cfg)
@@ -308,7 +259,7 @@ func (client *mongoClient) WriteConfig(ctx context.Context, cfg RSConfig) error 
 	return nil
 }
 
-func (client *mongoClient) RSStatus(ctx context.Context) (Status, error) {
+func RSStatus(ctx context.Context, client *mongo.Client) (Status, error) {
 	status := Status{}
 
 	resp := client.Database("admin").RunCommand(ctx, bson.D{{Key: "replSetGetStatus", Value: 1}})
@@ -327,15 +278,15 @@ func (client *mongoClient) RSStatus(ctx context.Context) (Status, error) {
 	return status, nil
 }
 
-func (client *mongoClient) StartBalancer(ctx context.Context) error {
+func StartBalancer(ctx context.Context, client *mongo.Client) error {
 	return switchBalancer(ctx, client, "balancerStart")
 }
 
-func (client *mongoClient) StopBalancer(ctx context.Context) error {
+func StopBalancer(ctx context.Context, client *mongo.Client) error {
 	return switchBalancer(ctx, client, "balancerStop")
 }
 
-func switchBalancer(ctx context.Context, client *mongoClient, command string) error {
+func switchBalancer(ctx context.Context, client *mongo.Client, command string) error {
 	res := OKResponse{}
 
 	resp := client.Database("admin").RunCommand(ctx, bson.D{{Key: command, Value: 1}})
@@ -354,7 +305,7 @@ func switchBalancer(ctx context.Context, client *mongoClient, command string) er
 	return nil
 }
 
-func (client *mongoClient) IsBalancerRunning(ctx context.Context) (bool, error) {
+func IsBalancerRunning(ctx context.Context, client *mongo.Client) (bool, error) {
 	res := BalancerStatus{}
 
 	resp := client.Database("admin").RunCommand(ctx, bson.D{{Key: "balancerStatus", Value: 1}})
@@ -373,7 +324,7 @@ func (client *mongoClient) IsBalancerRunning(ctx context.Context) (bool, error) 
 	return res.Mode == "full", nil
 }
 
-func (client *mongoClient) GetFCV(ctx context.Context) (string, error) {
+func GetFCV(ctx context.Context, client *mongo.Client) (string, error) {
 	res := FCV{}
 
 	resp := client.Database("admin").RunCommand(ctx, bson.D{
@@ -392,16 +343,12 @@ func (client *mongoClient) GetFCV(ctx context.Context) (string, error) {
 	return res.FCV.Version, nil
 }
 
-func (client *mongoClient) SetFCV(ctx context.Context, version string) error {
+func SetFCV(ctx context.Context, client *mongo.Client, version string) error {
 	res := OKResponse{}
+
 	command := "setFeatureCompatibilityVersion"
 
-	var resp *mongo.SingleResult
-	if version == "4.4" || version == "5.0" || version == "6.0" {
-		resp = client.Database("admin").RunCommand(ctx, bson.D{{Key: command, Value: version}})
-	} else {
-		resp = client.Database("admin").RunCommand(ctx, bson.D{{Key: command, Value: version}, {Key: "confirm", Value: true}})
-	}
+	resp := client.Database("admin").RunCommand(ctx, bson.D{{Key: command, Value: version}})
 	if resp.Err() != nil {
 		return errors.Wrap(resp.Err(), command)
 	}
@@ -417,7 +364,7 @@ func (client *mongoClient) SetFCV(ctx context.Context, version string) error {
 	return nil
 }
 
-func (client *mongoClient) ListDBs(ctx context.Context) (DBList, error) {
+func ListDBs(ctx context.Context, client *mongo.Client) (DBList, error) {
 	dbList := DBList{}
 
 	resp := client.Database("admin").RunCommand(ctx, bson.D{{Key: "listDatabases", Value: 1}})
@@ -436,7 +383,7 @@ func (client *mongoClient) ListDBs(ctx context.Context) (DBList, error) {
 	return dbList, nil
 }
 
-func (client *mongoClient) ListShard(ctx context.Context) (ShardList, error) {
+func ListShard(ctx context.Context, client *mongo.Client) (ShardList, error) {
 	shardList := ShardList{}
 
 	resp := client.Database("admin").RunCommand(ctx, bson.D{{Key: "listShards", Value: 1}})
@@ -455,7 +402,7 @@ func (client *mongoClient) ListShard(ctx context.Context) (ShardList, error) {
 	return shardList, nil
 }
 
-func (client *mongoClient) RemoveShard(ctx context.Context, shard string) (ShardRemoveResp, error) {
+func RemoveShard(ctx context.Context, client *mongo.Client, shard string) (ShardRemoveResp, error) {
 	removeResp := ShardRemoveResp{}
 
 	resp := client.Database("admin").RunCommand(ctx, bson.D{{Key: "removeShard", Value: shard}})
@@ -474,7 +421,7 @@ func (client *mongoClient) RemoveShard(ctx context.Context, shard string) (Shard
 	return removeResp, nil
 }
 
-func (client *mongoClient) RSBuildInfo(ctx context.Context) (BuildInfo, error) {
+func RSBuildInfo(ctx context.Context, client *mongo.Client) (BuildInfo, error) {
 	bi := BuildInfo{}
 
 	resp := client.Database("admin").RunCommand(ctx, bson.D{{Key: "buildinfo", Value: 1}})
@@ -493,10 +440,10 @@ func (client *mongoClient) RSBuildInfo(ctx context.Context) (BuildInfo, error) {
 	return bi, nil
 }
 
-func (client *mongoClient) StepDown(ctx context.Context, seconds int, force bool) error {
+func StepDown(ctx context.Context, client *mongo.Client, force bool) error {
 	resp := OKResponse{}
 
-	res := client.Database("admin").RunCommand(ctx, bson.D{{Key: "replSetStepDown", Value: seconds}, {Key: "force", Value: force}})
+	res := client.Database("admin").RunCommand(ctx, bson.D{{Key: "replSetStepDown", Value: 60}, {Key: "force", Value: force}})
 	err := res.Err()
 	if err != nil {
 		cErr, ok := err.(mongo.CommandError)
@@ -518,27 +465,7 @@ func (client *mongoClient) StepDown(ctx context.Context, seconds int, force bool
 	return nil
 }
 
-func (client *mongoClient) Freeze(ctx context.Context, seconds int) error {
-	resp := OKResponse{}
-
-	res := client.Database("admin").RunCommand(ctx, bson.D{{Key: "replSetFreeze", Value: seconds}})
-	err := res.Err()
-	if err != nil {
-		return errors.Wrap(err, "replSetStepDown")
-	}
-
-	if err := res.Decode(&resp); err != nil {
-		return errors.Wrap(err, "failed to decode response of replSetStepDown")
-	}
-
-	if resp.OK != 1 {
-		return errors.Errorf("mongo says: %s", resp.Errmsg)
-	}
-
-	return nil
-}
-
-func (client *mongoClient) IsMaster(ctx context.Context) (*IsMasterResp, error) {
+func IsMaster(ctx context.Context, client *mongo.Client) (*IsMasterResp, error) {
 	cur := client.Database("admin").RunCommand(ctx, bson.D{{Key: "isMaster", Value: 1}})
 	if cur.Err() != nil {
 		return nil, errors.Wrap(cur.Err(), "run isMaster")
@@ -556,7 +483,7 @@ func (client *mongoClient) IsMaster(ctx context.Context) (*IsMasterResp, error) 
 	return &resp, nil
 }
 
-func (client *mongoClient) GetUserInfo(ctx context.Context, username string) (*User, error) {
+func GetUserInfo(ctx context.Context, client *mongo.Client, username string) (*User, error) {
 	resp := UsersInfo{}
 	res := client.Database("admin").RunCommand(ctx, bson.D{{Key: "usersInfo", Value: username}})
 	if res.Err() != nil {
@@ -576,18 +503,18 @@ func (client *mongoClient) GetUserInfo(ctx context.Context, username string) (*U
 	return &resp.Users[0], nil
 }
 
-func (client *mongoClient) UpdateUserRoles(ctx context.Context, username string, roles []map[string]interface{}) error {
+func UpdateUserRoles(ctx context.Context, client *mongo.Client, username string, roles []map[string]interface{}) error {
 	return client.Database("admin").RunCommand(ctx, bson.D{{Key: "updateUser", Value: username}, {Key: "roles", Value: roles}}).Err()
 }
 
 // UpdateUserPass updates user's password
-func (client *mongoClient) UpdateUserPass(ctx context.Context, name, pass string) error {
+func UpdateUserPass(ctx context.Context, client *mongo.Client, name, pass string) error {
 	return client.Database("admin").RunCommand(ctx, bson.D{{Key: "updateUser", Value: name}, {Key: "pwd", Value: pass}}).Err()
 }
 
 // UpdateUser recreates user with new name and password
 // should be used only when username was changed
-func (client *mongoClient) UpdateUser(ctx context.Context, currName, newName, pass string) error {
+func UpdateUser(ctx context.Context, client *mongo.Client, currName, newName, pass string) error {
 	mu := struct {
 		Users []struct {
 			Roles interface{} `bson:"roles"`
@@ -695,30 +622,6 @@ func (m *ConfigMembers) FixTags(compareWith ConfigMembers) (changes bool) {
 	}
 
 	return changes
-}
-
-func (m *ConfigMembers) HorizonsChanged(compareWith ConfigMembers) bool {
-	cm := make(map[string]struct {
-		horizons map[string]string
-	}, len(compareWith))
-
-	for _, member := range compareWith {
-		cm[member.Host] = struct{ horizons map[string]string }{horizons: member.Horizons}
-	}
-
-	changed := false
-
-	for i := 0; i < len(*m); i++ {
-		member := []ConfigMember(*m)[i]
-		if mem, ok := cm[member.Host]; ok {
-			if !reflect.DeepEqual(mem.horizons, member.Horizons) {
-				[]ConfigMember(*m)[i].Horizons = mem.horizons
-				changed = true
-			}
-		}
-	}
-
-	return changed
 }
 
 // ExternalNodesChanged checks if votes or priority fields changed for external nodes

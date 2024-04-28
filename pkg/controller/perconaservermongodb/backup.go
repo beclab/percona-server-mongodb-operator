@@ -7,16 +7,13 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
-	"time"
 
 	"github.com/robfig/cron/v3"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/x/bsonx/bsoncore"
-	batchv1 "k8s.io/api/batch/v1"
+	batchv1beta1 "k8s.io/api/batch/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -104,7 +101,7 @@ func (r *ReconcilePerconaServerMongoDB) deleteOldBackupTasks(ctx context.Context
 
 	if cr.CompareVersion("1.13.0") < 0 {
 		ls := backup.NewBackupCronJobLabels(cr.Name, cr.Spec.Backup.Labels)
-		tasksList := &batchv1.CronJobList{}
+		tasksList := &batchv1beta1.CronJobList{}
 		err := r.client.List(ctx,
 			tasksList,
 			&client.ListOptions{
@@ -203,8 +200,7 @@ func (r *ReconcilePerconaServerMongoDB) deleteBackupTask(cr *api.PerconaServerMo
 
 // oldScheduledBackups returns list of the most old psmdb-bakups that execeed `keep` limit
 func (r *ReconcilePerconaServerMongoDB) oldScheduledBackups(ctx context.Context, cr *api.PerconaServerMongoDB,
-	ancestor string, keep int,
-) ([]api.PerconaServerMongoDBBackup, error) {
+	ancestor string, keep int) ([]api.PerconaServerMongoDBBackup, error) {
 	bcpList := api.PerconaServerMongoDBBackupList{}
 	err := r.client.List(ctx,
 		&bcpList,
@@ -326,40 +322,10 @@ func (r *ReconcilePerconaServerMongoDB) hasFullBackup(ctx context.Context, cr *a
 	return false, nil
 }
 
-func getLatestBackup(ctx context.Context, cl client.Client, cr *api.PerconaServerMongoDB) (*api.PerconaServerMongoDBBackup, error) {
-	backups := api.PerconaServerMongoDBBackupList{}
-	if err := cl.List(ctx, &backups, &client.ListOptions{Namespace: cr.Namespace}); err != nil {
-		if k8sErrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, errors.Wrap(err, "get backup list")
-	}
-
-	var latest *api.PerconaServerMongoDBBackup
-	for _, b := range backups.Items {
-		b := b
-
-		if b.Status.State != api.BackupStateReady || b.Spec.GetClusterName() != cr.Name {
-			continue
-		}
-
-		if latest == nil || latest.CreationTimestamp.Before(&b.ObjectMeta.CreationTimestamp) {
-			latest = &b
-		}
-	}
-
-	return latest, nil
-}
-
 func (r *ReconcilePerconaServerMongoDB) updatePITR(ctx context.Context, cr *api.PerconaServerMongoDB) error {
 	log := logf.FromContext(ctx)
 
 	if !cr.Spec.Backup.Enabled {
-		return nil
-	}
-
-	_, resyncNeeded := cr.Annotations[api.AnnotationResyncPBM]
-	if resyncNeeded {
 		return nil
 	}
 
@@ -379,7 +345,7 @@ func (r *ReconcilePerconaServerMongoDB) updatePITR(ctx context.Context, cr *api.
 	}
 	defer pbm.Close(ctx)
 
-	if cr.Spec.Backup.PITR.Enabled && !cr.Spec.Backup.PITR.OplogOnly {
+	if cr.Spec.Backup.PITR.Enabled {
 		hasFullBackup, err := r.hasFullBackup(ctx, cr)
 		if err != nil {
 			return errors.Wrap(err, "check full backup")
@@ -391,47 +357,10 @@ func (r *ReconcilePerconaServerMongoDB) updatePITR(ctx context.Context, cr *api.
 		}
 	}
 
-	val, err := pbm.GetConfigVar(ctx, "pitr.enabled")
+	val, err := pbm.C.GetConfigVar("pitr.enabled")
 	if err != nil {
 		if !errors.Is(err, mongo.ErrNoDocuments) {
 			return errors.Wrap(err, "get pitr.enabled")
-		}
-
-		if len(cr.Spec.Backup.Storages) == 1 {
-			// if PiTR is enabled user can configure only one storage
-			var storage api.BackupStorageSpec
-			for name, stg := range cr.Spec.Backup.Storages {
-				storage = stg
-				log.Info("Configuring PBM with storage", "storage", name)
-				break
-			}
-
-			var secretName string
-			switch storage.Type {
-			case api.BackupStorageS3:
-				secretName = storage.S3.CredentialsSecret
-			case api.BackupStorageAzure:
-				secretName = storage.Azure.CredentialsSecret
-			}
-
-			if secretName != "" {
-				exists, err := secretExists(ctx, r.client, types.NamespacedName{Name: secretName, Namespace: cr.Namespace})
-				if err != nil {
-					return errors.Wrap(err, "check storage credentials secret")
-				}
-
-				if !exists {
-					log.Error(nil, "Storage credentials secret does not exist", "secret", secretName)
-					return nil
-				}
-			}
-
-			err = pbm.SetConfig(ctx, r.client, cr, storage)
-			if err != nil {
-				return errors.Wrap(err, "set PBM config")
-			}
-
-			log.Info("Configured PBM storage")
 		}
 
 		return nil
@@ -439,13 +368,13 @@ func (r *ReconcilePerconaServerMongoDB) updatePITR(ctx context.Context, cr *api.
 
 	enabled, ok := val.(bool)
 	if !ok {
-		return errors.Errorf("unexpected value of pitr.enabled: %T", val)
+		return errors.Wrap(err, "unexpected value of pitr.enabled")
 	}
 
 	if enabled != cr.Spec.Backup.PITR.Enabled {
 		val := strconv.FormatBool(cr.Spec.Backup.PITR.Enabled)
 		log.Info("Setting pitr.enabled in PBM config", "enabled", val)
-		if err := pbm.SetConfigVar(ctx, "pitr.enabled", val); err != nil {
+		if err := pbm.C.SetConfigVar("pitr.enabled", val); err != nil {
 			return errors.Wrap(err, "update pitr.enabled")
 		}
 	}
@@ -454,33 +383,7 @@ func (r *ReconcilePerconaServerMongoDB) updatePITR(ctx context.Context, cr *api.
 		return nil
 	}
 
-	val, err = pbm.GetConfigVar(ctx, "pitr.oplogOnly")
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil
-		}
-
-		if errors.Is(err, bsoncore.ErrElementNotFound) {
-			val = false
-		} else {
-			return errors.Wrap(err, "get pitr.oplogOnly")
-		}
-	}
-
-	oplogOnly, ok := val.(bool)
-	if !ok {
-		return errors.Errorf("unexpected value of pitr.oplogOnly: %T", val)
-	}
-
-	if oplogOnly != cr.Spec.Backup.PITR.OplogOnly {
-		enabled := strconv.FormatBool(cr.Spec.Backup.PITR.OplogOnly)
-		log.Info("Setting pitr.oplogOnly in PBM config", "value", enabled)
-		if err := pbm.SetConfigVar(ctx, "pitr.oplogOnly", enabled); err != nil {
-			return errors.Wrap(err, "update pitr.oplogOnly")
-		}
-	}
-
-	val, err = pbm.GetConfigVar(ctx, "pitr.oplogSpanMin")
+	val, err = pbm.C.GetConfigVar("pitr.oplogSpanMin")
 	if err != nil {
 		if !errors.Is(err, mongo.ErrNoDocuments) {
 			return errors.Wrap(err, "get pitr.oplogSpanMin")
@@ -491,18 +394,18 @@ func (r *ReconcilePerconaServerMongoDB) updatePITR(ctx context.Context, cr *api.
 
 	oplogSpanMin, ok := val.(float64)
 	if !ok {
-		return errors.Errorf("unexpected value of pitr.oplogSpanMin: %T", val)
+		return errors.Wrap(err, "unexpected value of pitr.oplogSpanMin")
 	}
 
 	if oplogSpanMin != cr.Spec.Backup.PITR.OplogSpanMin.Float64() {
 		val := cr.Spec.Backup.PITR.OplogSpanMin.String()
-		if err := pbm.SetConfigVar(ctx, "pitr.oplogSpanMin", val); err != nil {
+		if err := pbm.C.SetConfigVar("pitr.oplogSpanMin", val); err != nil {
 			return errors.Wrap(err, "update pitr.oplogSpanMin")
 		}
 	}
 
-	val, err = pbm.GetConfigVar(ctx, "pitr.compression")
-	compression := ""
+	val, err = pbm.C.GetConfigVar("pitr.compression")
+	var compression = ""
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil
@@ -512,29 +415,29 @@ func (r *ReconcilePerconaServerMongoDB) updatePITR(ctx context.Context, cr *api.
 	} else {
 		compression, ok = val.(string)
 		if !ok {
-			return errors.Errorf("unexpected value of pitr.compression: %T", val)
+			return errors.Wrap(err, "unexpected value of pitr.compression")
 		}
 	}
 
 	if compression != string(cr.Spec.Backup.PITR.CompressionType) {
 		if string(cr.Spec.Backup.PITR.CompressionType) == "" {
-			if err := pbm.DeleteConfigVar(ctx, "pitr.compression"); err != nil {
+			if err := pbm.C.DeleteConfigVar("pitr.compression"); err != nil {
 				return errors.Wrap(err, "delete pitr.compression")
 			}
-		} else if err := pbm.SetConfigVar(ctx, "pitr.compression", string(cr.Spec.Backup.PITR.CompressionType)); err != nil {
+		} else if err := pbm.C.SetConfigVar("pitr.compression", string(cr.Spec.Backup.PITR.CompressionType)); err != nil {
 			return errors.Wrap(err, "update pitr.compression")
 		}
 
 		// PBM needs to disabling and enabling PITR to change compression type
-		if err := pbm.SetConfigVar(ctx, "pitr.enabled", "false"); err != nil {
+		if err := pbm.C.SetConfigVar("pitr.enabled", "false"); err != nil {
 			return errors.Wrap(err, "disable pitr")
 		}
-		if err := pbm.SetConfigVar(ctx, "pitr.enabled", "true"); err != nil {
+		if err := pbm.C.SetConfigVar("pitr.enabled", "true"); err != nil {
 			return errors.Wrap(err, "enable pitr")
 		}
 	}
 
-	val, err = pbm.GetConfigVar(ctx, "pitr.compressionLevel")
+	val, err = pbm.C.GetConfigVar("pitr.compressionLevel")
 	var compressionLevel *int = nil
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
@@ -543,75 +446,29 @@ func (r *ReconcilePerconaServerMongoDB) updatePITR(ctx context.Context, cr *api.
 			return errors.Wrap(err, "get pitr.compressionLevel")
 		}
 	} else {
-		var iVal int
-		switch v := val.(type) {
-		case int64:
-			iVal = int(v)
-		case int32:
-			iVal = int(v)
-		default:
-			return errors.Errorf("unexpected value of pitr.compressionLevel: %T", val)
+		tmpCompressionLevel, ok := val.(int)
+		if !ok {
+			return errors.Wrap(err, "unexpected value of pitr.compressionLevel")
 		}
-		compressionLevel = &iVal
+		compressionLevel = &tmpCompressionLevel
 	}
 
 	if !reflect.DeepEqual(compressionLevel, cr.Spec.Backup.PITR.CompressionLevel) {
 		if cr.Spec.Backup.PITR.CompressionLevel == nil {
-			if err := pbm.DeleteConfigVar(ctx, "pitr.compressionLevel"); err != nil {
+			if err := pbm.C.DeleteConfigVar("pitr.compressionLevel"); err != nil {
 				return errors.Wrap(err, "delete pitr.compressionLevel")
 			}
-		} else if err := pbm.SetConfigVar(ctx, "pitr.compressionLevel", strconv.FormatInt(int64(*cr.Spec.Backup.PITR.CompressionLevel), 10)); err != nil {
+		} else if err := pbm.C.SetConfigVar("pitr.compressionLevel", strconv.FormatInt(int64(*cr.Spec.Backup.PITR.CompressionLevel), 10)); err != nil {
 			return errors.Wrap(err, "update pitr.compressionLevel")
 		}
 
 		// PBM needs to disabling and enabling PITR to change compression level
-		if err := pbm.SetConfigVar(ctx, "pitr.enabled", "false"); err != nil {
+		if err := pbm.C.SetConfigVar("pitr.enabled", "false"); err != nil {
 			return errors.Wrap(err, "disable pitr")
 		}
-		if err := pbm.SetConfigVar(ctx, "pitr.enabled", "true"); err != nil {
+		if err := pbm.C.SetConfigVar("pitr.enabled", "true"); err != nil {
 			return errors.Wrap(err, "enable pitr")
 		}
-	}
-
-	if err := updateLatestRestorableTime(ctx, r.client, pbm, cr); err != nil {
-		return errors.Wrap(err, "update latest restorable time")
-	}
-
-	return nil
-}
-
-func updateLatestRestorableTime(ctx context.Context, cl client.Client, pbm backup.PBM, cr *api.PerconaServerMongoDB) error {
-	if cr.CompareVersion("1.16.0") < 0 {
-		return nil
-	}
-
-	tl, err := pbm.GetLatestTimelinePITR(ctx)
-	if err != nil {
-		if err == backup.ErrNoOplogsForPITR {
-			return nil
-		}
-		return errors.Wrap(err, "get latest PITR timeline")
-	}
-
-	bcp, err := getLatestBackup(ctx, cl, cr)
-	if err != nil {
-		return errors.Wrap(err, "get latest backup")
-	}
-	if bcp == nil {
-		return nil
-	}
-
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		b := new(api.PerconaServerMongoDBBackup)
-		if err := cl.Get(ctx, types.NamespacedName{Name: bcp.Name, Namespace: bcp.Namespace}, b); err != nil {
-			return errors.Wrap(err, "get backup")
-		}
-		b.Status.LatestRestorableTime = &metav1.Time{
-			Time: time.Unix(int64(tl.End), 0),
-		}
-		return cl.Status().Update(ctx, b)
-	}); err != nil {
-		return errors.Wrap(err, "update status")
 	}
 
 	return nil
@@ -659,23 +516,10 @@ func (r *ReconcilePerconaServerMongoDB) resyncPBMIfNeeded(ctx context.Context, c
 	command := []string{"pbm", "config", "--force-resync"}
 	log.Info("Starting PBM resync", "command", command)
 
-	err = r.clientcmd.Exec(ctx, pod, "backup-agent", command, nil, &stdoutBuffer, &stderrBuffer, false)
+	err = r.clientcmd.Exec(pod, "backup-agent", command, nil, &stdoutBuffer, &stderrBuffer, false)
 	if err != nil {
 		return errors.Wrapf(err, "start PBM resync: run %v", command)
 	}
 
 	return nil
-}
-
-func secretExists(ctx context.Context, cl client.Client, nn types.NamespacedName) (bool, error) {
-	var secret corev1.Secret
-	err := cl.Get(ctx, nn, &secret)
-	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-
-	return true, nil
 }

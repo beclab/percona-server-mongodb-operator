@@ -6,10 +6,7 @@ spec:
   #platform: openshift
   image:
   imagePullPolicy: Always
-  unsafeFlags:
-    tls: true
-  tls:
-    mode: disabled
+  allowUnsafeConfigurations: true
   backup:
     enabled: false
     image: perconalab/percona-server-mongodb-operator:0.4.0-backup
@@ -17,7 +14,6 @@ spec:
 #    tasks:
   replsets:
   - name: rs0
-    terminationGracePeriodSeconds: 300
     configuration: |
       operationProfiling:
         mode: slowOp

@@ -37,7 +37,6 @@ const (
 type PerconaServerMongoDBRestoreStatus struct {
 	State          RestoreState `json:"state,omitempty"`
 	PBMname        string       `json:"pbmName,omitempty"`
-	PITRTarget     string       `json:"pitrTarget,omitempty"`
 	Error          string       `json:"error,omitempty"`
 	CompletedAt    *metav1.Time `json:"completed,omitempty"`
 	LastTransition *metav1.Time `json:"lastTransition,omitempty"`
@@ -141,10 +140,6 @@ func (t *PITRestoreDate) UnmarshalJSON(b []byte) (err error) {
 	return nil
 }
 
-func (t *PITRestoreDate) MarshalJSON() ([]byte, error) {
-	return json.Marshal(t.Time.Format("2006-01-02 15:04:05"))
-}
-
 type PITRestoreSpec struct {
 	Type PITRestoreType  `json:"type,omitempty"`
 	Date *PITRestoreDate `json:"date,omitempty"`
@@ -157,8 +152,4 @@ var (
 	PITRestoreTypeLatest PITRestoreType = "latest"
 )
 
-const (
-	AnnotationRestoreInProgress = "percona.com/restore-in-progress"
-	// AnnotationUpdateMongosFirst is an annotation used to force next smart update to be applied to mongos before mongod.
-	AnnotationUpdateMongosFirst = "percona.com/update-mongos-first"
-)
+const AnnotationRestoreInProgress = "percona.com/restore-in-progress"

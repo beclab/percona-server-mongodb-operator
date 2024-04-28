@@ -28,14 +28,10 @@
         },
         "actions": [
           "collStats",
-          "dbHash",
           "dbStats",
-          "find",
           "getDatabaseVersion",
           "getShardVersion",
-          "indexStats",
-          "listCollections",
-          "listIndexes"
+          "indexStats"
         ]
       },
       {
@@ -45,18 +41,11 @@
         },
         "actions": [
           "collStats",
+          "dbHash",
           "dbStats",
           "find",
-          "indexStats"
-        ]
-      },
-      {
-        "resource": {
-          "db": "admin",
-          "collection": "system.version"
-        },
-        "actions": [
-          "find"
+          "listCollections",
+          "listIndexes"
         ]
       },
       {
@@ -165,6 +154,7 @@
           "cluster": true
         },
         "actions": [
+          "checkFreeMonitoringStatus",
           "connPoolStats",
           "getDefaultRWConcern",
           "getCmdLineOpts",

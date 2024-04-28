@@ -75,8 +75,8 @@ check_cr_config() {
 }
 
 main() {
-	create_infra $namespace
 	deploy_cert_manager
+	create_infra $namespace
 
 	desc 'create secrets and start client'
 	kubectl_bin apply \

@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/pkg/errors"
+	mongod "go.mongodb.org/mongo-driver/mongo"
 	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -113,7 +114,7 @@ func (r *ReconcilePerconaServerMongoDB) reconcileUsers(ctx context.Context, cr *
 
 			pods = append(pods, mongosList.Items...)
 
-			cfgPodlist, err := psmdb.GetRSPods(ctx, r.client, cr, api.ConfigReplSetName)
+			cfgPodlist, err := psmdb.GetRSPods(ctx, r.client, cr, api.ConfigReplSetName, false)
 			if err != nil {
 				return errors.Wrap(err, "failed to get mongos pods")
 			}
@@ -147,7 +148,7 @@ func (r *ReconcilePerconaServerMongoDB) killcontainer(ctx context.Context, pods 
 				err := retry.OnError(retry.DefaultBackoff, func(_ error) bool { return true }, func() error {
 					stderrBuf := &bytes.Buffer{}
 
-					err := r.clientcmd.Exec(ctx, &pod, containerName, []string{"/bin/sh", "-c", "kill 1"}, nil, nil, stderrBuf, false)
+					err := r.clientcmd.Exec(&pod, containerName, []string{"/bin/sh", "-c", "kill 1"}, nil, nil, stderrBuf, false)
 					if err != nil {
 						return errors.Wrap(err, "exec command in pod")
 					}
@@ -158,6 +159,7 @@ func (r *ReconcilePerconaServerMongoDB) killcontainer(ctx context.Context, pods 
 
 					return nil
 				})
+
 				if err != nil {
 					return errors.Wrap(err, "failed to restart container")
 				}
@@ -194,7 +196,7 @@ func (su *systemUsers) add(nameKey, passKey string) (changed bool, err error) {
 		bytes.Equal(su.newData[passKey], su.currData[passKey]) {
 		return false, nil
 	}
-	if nameKey == api.EnvPMMServerUser || passKey == api.EnvPMMServerAPIKey {
+	if nameKey == envPMMServerUser || passKey == envPMMServerAPIKey {
 		return true, nil
 	}
 	su.users = append(su.users, systemUser{
@@ -211,8 +213,7 @@ func (su *systemUsers) len() int {
 }
 
 func (r *ReconcilePerconaServerMongoDB) updateSysUsers(ctx context.Context, cr *api.PerconaServerMongoDB, newUsersSec, currUsersSec *corev1.Secret,
-	repls []*api.ReplsetSpec,
-) ([]string, error) {
+	repls []*api.ReplsetSpec) ([]string, error) {
 	su := systemUsers{
 		currData: currUsersSec.Data,
 		newData:  newUsersSec.Data,
@@ -225,31 +226,31 @@ func (r *ReconcilePerconaServerMongoDB) updateSysUsers(ctx context.Context, cr *
 	}
 	users := []user{
 		{
-			nameKey: api.EnvMongoDBClusterAdminUser,
-			passKey: api.EnvMongoDBClusterAdminPassword,
+			nameKey: envMongoDBClusterAdminUser,
+			passKey: envMongoDBClusterAdminPassword,
 		},
 
 		{
-			nameKey: api.EnvMongoDBClusterMonitorUser,
-			passKey: api.EnvMongoDBClusterMonitorPassword,
+			nameKey: envMongoDBClusterMonitorUser,
+			passKey: envMongoDBClusterMonitorPassword,
 		},
 
 		{
-			nameKey: api.EnvMongoDBBackupUser,
-			passKey: api.EnvMongoDBBackupPassword,
+			nameKey: envMongoDBBackupUser,
+			passKey: envMongoDBBackupPassword,
 		},
 
 		// !!! UserAdmin always must be the last to update since we're using it for the mongo connection
 		{
-			nameKey: api.EnvMongoDBUserAdminUser,
-			passKey: api.EnvMongoDBUserAdminPassword,
+			nameKey: envMongoDBUserAdminUser,
+			passKey: envMongoDBUserAdminPassword,
 		},
 	}
-	if _, ok := currUsersSec.Data[api.EnvMongoDBDatabaseAdminUser]; cr.CompareVersion("1.13.0") >= 0 && ok {
+	if _, ok := currUsersSec.Data[envMongoDBDatabaseAdminUser]; cr.CompareVersion("1.13.0") >= 0 && ok {
 		users = append([]user{
 			{
-				nameKey: api.EnvMongoDBDatabaseAdminUser,
-				passKey: api.EnvMongoDBDatabaseAdminPassword,
+				nameKey: envMongoDBDatabaseAdminUser,
+				passKey: envMongoDBDatabaseAdminPassword,
 			},
 		}, users...)
 	}
@@ -258,15 +259,15 @@ func (r *ReconcilePerconaServerMongoDB) updateSysUsers(ctx context.Context, cr *
 		if cr.Spec.PMM.ShouldUseAPIKeyAuth(newUsersSec) {
 			users = append([]user{
 				{
-					nameKey: api.EnvPMMServerAPIKey,
-					passKey: api.EnvPMMServerAPIKey,
+					nameKey: envPMMServerAPIKey,
+					passKey: envPMMServerAPIKey,
 				},
 			}, users...)
 		} else {
 			users = append([]user{
 				{
-					nameKey: api.EnvPMMServerUser,
-					passKey: api.EnvPMMServerPassword,
+					nameKey: envPMMServerUser,
+					passKey: envPMMServerPassword,
 				},
 			}, users...)
 		}
@@ -280,9 +281,9 @@ func (r *ReconcilePerconaServerMongoDB) updateSysUsers(ctx context.Context, cr *
 
 		if changed {
 			switch u.nameKey {
-			case api.EnvMongoDBBackupUser:
+			case envMongoDBBackupUser:
 				containers = append(containers, "backup-agent")
-			case api.EnvPMMServerUser, api.EnvPMMServerAPIKey:
+			case envPMMServerUser, envPMMServerAPIKey:
 				containers = append(containers, "pmm-client")
 			}
 		}
@@ -303,7 +304,7 @@ func (r *ReconcilePerconaServerMongoDB) updateUsers(ctx context.Context, cr *api
 	for i := range repls {
 		replset := repls[i]
 		grp.Go(func() error {
-			client, err := r.mongoClientWithRole(gCtx, cr, *replset, api.RoleUserAdmin)
+			client, err := r.mongoClientWithRole(gCtx, cr, *replset, roleUserAdmin)
 			if err != nil {
 				return errors.Wrap(err, "dial:")
 			}
@@ -326,13 +327,13 @@ func (r *ReconcilePerconaServerMongoDB) updateUsers(ctx context.Context, cr *api
 	return grp.Wait()
 }
 
-func (u *systemUser) updateMongo(ctx context.Context, c mongo.Client) error {
+func (u *systemUser) updateMongo(ctx context.Context, c *mongod.Client) error {
 	if bytes.Equal(u.currName, u.name) {
-		err := c.UpdateUserPass(ctx, string(u.name), string(u.pass))
+		err := mongo.UpdateUserPass(ctx, c, string(u.name), string(u.pass))
 		return errors.Wrapf(err, "change password for user %s", u.name)
 	}
 
-	err := c.UpdateUser(ctx, string(u.currName), string(u.name), string(u.pass))
+	err := mongo.UpdateUser(ctx, c, string(u.currName), string(u.name), string(u.pass))
 	return errors.Wrapf(err, "update user %s -> %s", u.currName, u.name)
 }
 

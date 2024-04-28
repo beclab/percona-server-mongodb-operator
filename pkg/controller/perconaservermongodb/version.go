@@ -17,9 +17,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/percona/percona-backup-mongodb/pbm/defs"
+	"github.com/percona/percona-backup-mongodb/pbm"
 	api "github.com/percona/percona-server-mongodb-operator/pkg/apis/psmdb/v1"
+	v1 "github.com/percona/percona-server-mongodb-operator/pkg/apis/psmdb/v1"
 	"github.com/percona/percona-server-mongodb-operator/pkg/k8s"
+	"github.com/percona/percona-server-mongodb-operator/pkg/psmdb/mongo"
 )
 
 func (r *ReconcilePerconaServerMongoDB) deleteEnsureVersion(cr *api.PerconaServerMongoDB, id int) {
@@ -38,12 +40,12 @@ func (r *ReconcilePerconaServerMongoDB) scheduleEnsureVersion(ctx context.Contex
 		return nil
 	}
 
-	if ok && schedule.CronSchedule == cr.Spec.UpgradeOptions.Schedule {
+	if ok && schedule.CronShedule == cr.Spec.UpgradeOptions.Schedule {
 		return nil
 	}
 
 	if ok {
-		log.Info("remove job because of new", "old", schedule.CronSchedule, "new", cr.Spec.UpgradeOptions.Schedule)
+		log.Info("remove job because of new", "old", schedule.CronShedule, "new", cr.Spec.UpgradeOptions.Schedule)
 		r.deleteEnsureVersion(cr, schedule.ID)
 	}
 
@@ -69,7 +71,7 @@ func (r *ReconcilePerconaServerMongoDB) scheduleEnsureVersion(ctx context.Contex
 			return
 		}
 
-		if localCr.Status.State != api.AppStateReady {
+		if localCr.Status.State != v1.AppStateReady {
 			log.Info("cluster is not ready")
 			return
 		}
@@ -91,9 +93,9 @@ func (r *ReconcilePerconaServerMongoDB) scheduleEnsureVersion(ctx context.Contex
 
 	jn := jobName(cr)
 	log.Info("add new job", "name", jn, "schedule", cr.Spec.UpgradeOptions.Schedule)
-	r.crons.jobs[jn] = Schedule{
-		ID:           int(id),
-		CronSchedule: cr.Spec.UpgradeOptions.Schedule,
+	r.crons.jobs[jn] = Shedule{
+		ID:          int(id),
+		CronShedule: cr.Spec.UpgradeOptions.Schedule,
 	}
 
 	return nil
@@ -126,8 +128,6 @@ func canUpgradeVersion(fcv, new string) bool {
 		return new == "5.0"
 	case "5.0":
 		return new == "6.0"
-	case "6.0":
-		return new == "7.0"
 	default:
 		return false
 	}
@@ -150,7 +150,7 @@ func MajorMinor(ver *v.Version) string {
 }
 
 func majorUpgradeRequested(cr *api.PerconaServerMongoDB, fcv string) (UpgradeRequest, error) {
-	if len(cr.Spec.UpgradeOptions.Apply) == 0 || api.OneOfUpgradeStrategy(string(cr.Spec.UpgradeOptions.Apply)) {
+	if len(cr.Spec.UpgradeOptions.Apply) == 0 || v1.OneOfUpgradeStrategy(string(cr.Spec.UpgradeOptions.Apply)) {
 		return UpgradeRequest{false, "", ""}, nil
 	}
 
@@ -283,7 +283,7 @@ func (r *ReconcilePerconaServerMongoDB) getVersionMeta(ctx context.Context, cr *
 	}
 
 	for _, task := range cr.Spec.Backup.Tasks {
-		if task.Type == defs.PhysicalBackup && task.Enabled {
+		if task.Type == pbm.PhysicalBackup && task.Enabled {
 			vm.PhysicalBackupScheduled = true
 			break
 		}
@@ -336,7 +336,7 @@ func (r *ReconcilePerconaServerMongoDB) ensureVersion(ctx context.Context, cr *a
 		return nil
 	}
 
-	if cr.Status.State != api.AppStateReady && cr.Status.MongoVersion != "" {
+	if cr.Status.State != v1.AppStateReady && cr.Status.MongoVersion != "" {
 		return errors.New("cluster is not ready")
 	}
 
@@ -430,7 +430,7 @@ func (r *ReconcilePerconaServerMongoDB) fetchVersionFromMongo(ctx context.Contex
 		return nil
 	}
 
-	session, err := r.mongoClientWithRole(ctx, cr, *replset, api.RoleClusterAdmin)
+	session, err := r.mongoClientWithRole(ctx, cr, *replset, roleClusterAdmin)
 	if err != nil {
 		return errors.Wrap(err, "dial")
 	}
@@ -442,7 +442,7 @@ func (r *ReconcilePerconaServerMongoDB) fetchVersionFromMongo(ctx context.Contex
 		}
 	}()
 
-	info, err := session.RSBuildInfo(ctx)
+	info, err := mongo.RSBuildInfo(ctx, session)
 	if err != nil {
 		return errors.Wrap(err, "get build info")
 	}
