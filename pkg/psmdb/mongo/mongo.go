@@ -59,6 +59,21 @@ func Dial(conf *Config) (*mongo.Client, error) {
 	ctx, pingcancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer pingcancel()
 
+	var maxRetries = 10
+	for i := 0; i < maxRetries; i++ {
+		err = client.Ping(ctx, readpref.Primary())
+		if err == nil {
+			break
+		}
+
+		if err != nil && i >= maxRetries {
+			return nil, errors.Wrap(err, "ping mongo")
+		}
+
+		time.Sleep(2 * time.Second)
+		continue
+
+	}
 	err = client.Ping(ctx, readpref.Primary())
 	if err != nil {
 		return nil, errors.Wrap(err, "ping mongo")
