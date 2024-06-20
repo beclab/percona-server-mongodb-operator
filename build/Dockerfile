@@ -6,38 +6,38 @@ COPY . .
 ARG GIT_COMMIT
 ARG GIT_BRANCH
 ARG GO_LDFLAGS
-ARG GOOS=linux
-ARG GOARCH=amd64
+ARG GOOS=
+ARG GOARCH=
 ARG CGO_ENABLED=0
 
 RUN go mod download \
-    && mkdir -p build/_output/bin \
-    && GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=$CGO_ENABLED GO_LDFLAGS=$GO_LDFLAGS \
-       go build -ldflags "-w -s -X main.GitCommit=$GIT_COMMIT -X main.GitBranch=$GIT_BRANCH" \
-           -o build/_output/bin/percona-server-mongodb-operator \
-               cmd/manager/main.go \
-    && cp -r build/_output/bin/percona-server-mongodb-operator /usr/local/bin/percona-server-mongodb-operator \
-    && GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=$CGO_ENABLED GO_LDFLAGS=$GO_LDFLAGS \
-       go build -ldflags "-w -s -X main.GitCommit=$GIT_COMMIT -X main.GitBranch=$GIT_BRANCH" \
-           -o build/_output/bin/mongodb-healthcheck \
-               cmd/mongodb-healthcheck/main.go \
-    && cp -r build/_output/bin/mongodb-healthcheck /usr/local/bin/mongodb-healthcheck \
-    && cp -r $GOPATH/pkg/mod/github.com/hashicorp /lib/
+  && mkdir -p build/_output/bin \
+  && GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=$CGO_ENABLED GO_LDFLAGS=$GO_LDFLAGS \
+  go build -ldflags "-w -s -X main.GitCommit=$GIT_COMMIT -X main.GitBranch=$GIT_BRANCH" \
+  -o build/_output/bin/percona-server-mongodb-operator \
+  cmd/manager/main.go \
+  && cp -r build/_output/bin/percona-server-mongodb-operator /usr/local/bin/percona-server-mongodb-operator \
+  && GOOS=$GOOS GOARCH=$GOARCH CGO_ENABLED=$CGO_ENABLED GO_LDFLAGS=$GO_LDFLAGS \
+  go build -ldflags "-w -s -X main.GitCommit=$GIT_COMMIT -X main.GitBranch=$GIT_BRANCH" \
+  -o build/_output/bin/mongodb-healthcheck \
+  cmd/mongodb-healthcheck/main.go \
+  && cp -r build/_output/bin/mongodb-healthcheck /usr/local/bin/mongodb-healthcheck \
+  && cp -r $GOPATH/pkg/mod/github.com/hashicorp /lib/
 
 # Looking for all possible License/Notice files and copying them to the image
 RUN find $GOPATH/pkg/mod -regextype posix-extended -iregex '.*(license|notice)(\.md|\.txt|$)' \
-         -exec \
-            sh -c 'mkdir -pv /licenses/$(echo "$0" | sed -E "s/\/(license|notice).*$//gi") \
-                   && cp -v "$0" /licenses/$(echo "$0" | sed -E "s/\/(license|notice).*$//gi")' {} \;
+  -exec \
+  sh -c 'mkdir -pv /licenses/$(echo "$0" | sed -E "s/\/(license|notice).*$//gi") \
+  && cp -v "$0" /licenses/$(echo "$0" | sed -E "s/\/(license|notice).*$//gi")' {} \;
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal AS ubi9
 RUN microdnf update -y && microdnf clean all
 
 LABEL name="Percona Server for MongoDB Operator" \
-      vendor="Percona" \
-      summary="Percona Server for MongoDB Operator simplifies the deployment and management of Percona Server for MongoDB in a Kubernetes or OpenShift environment" \
-      description="Percona Server for MongoDB is our free and open-source drop-in replacement for MongoDB Community Edition. It offers all the features and benefits of MongoDB Community Edition, plus additional enterprise-grade functionality." \
-      maintainer="Percona Development <info@percona.com>"
+  vendor="Percona" \
+  summary="Percona Server for MongoDB Operator simplifies the deployment and management of Percona Server for MongoDB in a Kubernetes or OpenShift environment" \
+  description="Percona Server for MongoDB is our free and open-source drop-in replacement for MongoDB Community Edition. It offers all the features and benefits of MongoDB Community Edition, plus additional enterprise-grade functionality." \
+  maintainer="Percona Development <info@percona.com>"
 
 COPY --from=go_builder /usr/local/bin/percona-server-mongodb-operator /usr/local/bin/percona-server-mongodb-operator
 COPY --from=go_builder /licenses/* /licenses
